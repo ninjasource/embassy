@@ -18,6 +18,7 @@ defmt-info = [ ]
 defmt-warn = [ ]
 defmt-error = [ ]
 
+default = ["nrf52840-pac"]
 nrf52805 = ["nrf52805-pac"]
 nrf52810 = ["nrf52810-pac"]
 nrf52811 = ["nrf52811-pac"]

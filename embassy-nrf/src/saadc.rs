@@ -103,6 +103,21 @@ impl<'d> OneShot<'d> {
             w
         });
 
+        r.ch[1].config.write(|w| {
+            w.refsel().variant(reference);
+            w.gain().variant(gain);
+            w.tacq().variant(time);
+            w.mode().se();
+            w.resp().variant(resistor);
+            w.resn().bypass();
+            if !matches!(oversample, Oversample::BYPASS) {
+                w.burst().enabled();
+            } else {
+                w.burst().disabled();
+            }
+            w
+        });
+
         // Disable all events interrupts
         r.intenclr.write(|w| unsafe { w.bits(0x003F_FFFF) });
 
@@ -169,6 +184,51 @@ impl<'d> OneShot<'d> {
 
         // The DMA wrote the sampled value to `val`.
         val
+    }    
+
+    async fn sample_diff_inner(&mut self, pin_a: PositiveChannel, pin_b: PositiveChannel) -> i16 {
+        let r = Self::regs();
+
+        // Set positive channel
+        r.ch[0].pselp.write(|w| w.pselp().variant(pin_a));
+        r.ch[1].pselp.write(|w| w.pselp().variant(pin_b));
+
+        // Set up the DMA
+        let mut val: i16 = 0;
+        r.result
+            .ptr
+            .write(|w| unsafe { w.ptr().bits(((&mut val) as *mut _) as u32) });
+        r.result.maxcnt.write(|w| unsafe { w.maxcnt().bits(1) });
+
+        // Reset and enable the end event
+        r.events_end.reset();
+        r.intenset.write(|w| w.end().set());
+
+        // Don't reorder the ADC start event before the previous writes. Hopefully self
+        // wouldn't happen anyway.
+        compiler_fence(Ordering::SeqCst);
+
+        r.tasks_start.write(|w| unsafe { w.bits(1) });
+        r.tasks_sample.write(|w| unsafe { w.bits(1) });
+
+        // Wait for 'end' event.
+        poll_fn(|cx| {
+            let r = Self::regs();
+
+            WAKER.register(cx.waker());
+
+            if r.events_end.read().bits() != 0 {
+                r.events_end.reset();
+                return Poll::Ready(());
+            }
+
+            Poll::Pending
+        })
+        .await;
+
+
+        // The DMA wrote the sampled value to `val`.
+        val
     }
 }
 
@@ -187,12 +247,37 @@ pub trait Sample {
     fn sample<'a, T: PositivePin>(&'a mut self, pin: &mut T) -> Self::SampleFuture<'a>;
 }
 
+pub trait SampleDiff {
+    type SampleFuture<'a>: Future<Output = i16> + 'a
+    where
+        Self: 'a;
+
+    fn sample_diff<'a, TA: PositivePin, TB: PositivePin>(
+        &'a mut self,
+        pin_a: &mut TA,
+        pin_b: &mut TB,
+    ) -> Self::SampleFuture<'a>;
+}
+
 impl<'d> Sample for OneShot<'d> {
     #[rustfmt::skip]
     type SampleFuture<'a> where Self: 'a = impl Future<Output = i16> + 'a;
 
     fn sample<'a, T: PositivePin>(&'a mut self, pin: &mut T) -> Self::SampleFuture<'a> {
         self.sample_inner(pin.channel())
+    }
+}
+
+impl<'d> SampleDiff for OneShot<'d> {
+    #[rustfmt::skip]
+    type SampleFuture<'a> where Self: 'a = impl Future<Output = i16> + 'a;
+
+    fn sample_diff<'a, TA: PositivePin, TB: PositivePin>(
+        &'a mut self,
+        pin_a: &mut TA,
+        pin_b: &mut TB,
+    ) -> Self::SampleFuture<'a> {
+        self.sample_diff_inner(pin_a.channel(), pin_b.channel())
     }
 }
 

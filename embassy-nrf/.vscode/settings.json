@@ -1,0 +1,11 @@
+{
+    //  "rust-analyzer.checkOnSave.command": "check --features nrf52840",
+    "rust-analyzer.cargo.features": [
+        "nrf52840"
+    ],
+    //"rust-analyzer.cargo.noDefaultFeatures": true,
+    //   "rust-analyzer.checkOnSave.extraArgs": [
+    //       "--features",
+    //       "nrf52840"
+    //   ],
+}
