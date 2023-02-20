@@ -524,6 +524,8 @@ impl_saadc_input!(P0_20, ANALOG_INPUT7);
 
 impl_i2s!(I2S0, I2S0, I2S0);
 
+impl_i2s!(I2S0, I2S0, I2S0);
+
 embassy_hal_internal::interrupt_mod!(
     FPU,
     CACHE,
