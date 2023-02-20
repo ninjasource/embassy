@@ -520,8 +520,7 @@ impl<'d, T: Instance> I2S<'d, T> {
             }
         };
 
-        c.swidth
-            .write(|w| unsafe { w.swidth().bits(self.config.sample_width.into()) });
+        c.swidth.write(|w| w.swidth().bits(self.config.sample_width.into()));
         c.align.write(|w| w.align().bit(self.config.align.into()));
         c.format.write(|w| w.format().bit(self.config.format.into()));
         c.channels
