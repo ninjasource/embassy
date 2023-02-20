@@ -12,7 +12,7 @@
     "nightly",
   ],
   "rust-analyzer.linkedProjects": [
-    // Declare for the target you wish to develop
+    // Declare for the target you wish to developk
     // "embassy-executor/Cargo.toml",
     // "embassy-sync/Cargo.toml",
     "examples/nrf52840/Cargo.toml",

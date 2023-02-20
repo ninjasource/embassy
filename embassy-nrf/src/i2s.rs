@@ -88,7 +88,17 @@ impl MasterClock {
 /// Master clock generator frequency.
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum MckFreq {
-    /// 32 Mhz / 8 = 4000.00 kHz
+    /// 32 Mhz / 8 = 16000.00 kHz
+    _32MDiv2,
+    /// 32 Mhz / 8 = 10666.67 kHz
+    _32MDiv3,
+    /// 32 Mhz / 8 =  8000.00 kHz
+    _32MDiv4,
+    /// 32 Mhz / 8 =  6400.00 kHz
+    _32MDiv5,
+    /// 32 Mhz / 6 =  5333.33 kHz
+    _32MDiv6,
+    /// 32 Mhz / 8 =  4000.00 kHz
     _32MDiv8,
     /// 32 Mhz / 10 = 3200.00 kHz
     _32MDiv10,
@@ -118,13 +128,13 @@ pub enum MckFreq {
 
 impl MckFreq {
     const REGISTER_VALUES: &'static [u32] = &[
-        0x20000000, 0x18000000, 0x16000000, 0x11000000, 0x10000000, 0x0C000000, 0x0B000000, 0x08800000, 0x08400000,
-        0x08000000, 0x06000000, 0x04100000, 0x020C0000,
+        0x80000000, 0x50000000, 0x40000000, 0x30000000, 0x28000000, 0x20000000, 0x18000000, 0x16000000, 0x11000000,
+        0x10000000, 0x0C000000, 0x0B000000, 0x08800000, 0x08400000, 0x08000000, 0x06000000, 0x04100000, 0x020C0000,
     ];
 
     const FREQUENCIES: &'static [u32] = &[
-        4000000, 3200000, 2909090, 2133333, 2000000, 1523809, 1391304, 1066666, 1032258, 1000000, 761904, 507936,
-        256000,
+        16000000, 10666667, 8000000, 6400000, 5333333, 4000000, 3200000, 2909090, 2133333, 2000000, 1523809, 1391304,
+        1066666, 1032258, 1000000, 761904, 507936, 256000,
     ];
 
     /// Return the value that needs to be written to the register.
@@ -215,7 +225,7 @@ impl From<ApproxSampleRate> for MasterClock {
     fn from(value: ApproxSampleRate) -> Self {
         match value {
             // error = 86
-            ApproxSampleRate::_11025 => MasterClock::new(MckFreq::_32MDiv15, Ratio::_192x),
+            //ApproxSampleRate::_11025 => MasterClock::new(MckFreq::_32MDiv15, Ratio::_192x),
             // error = 127
             ApproxSampleRate::_16000 => MasterClock::new(MckFreq::_32MDiv21, Ratio::_96x),
             // error = 172
@@ -226,6 +236,7 @@ impl From<ApproxSampleRate> for MasterClock {
             ApproxSampleRate::_44100 => MasterClock::new(MckFreq::_32MDiv15, Ratio::_48x),
             // error = 381
             ApproxSampleRate::_48000 => MasterClock::new(MckFreq::_32MDiv21, Ratio::_32x),
+            ApproxSampleRate::_11025 => MasterClock::new(MckFreq::_32MDiv5, Ratio::_128x),
         }
     }
 }
@@ -302,6 +313,16 @@ pub enum SampleWidth {
     _16bit,
     /// 24 bit samples.
     _24bit,
+    /// 32 bit samples.
+    _32bit,
+    /// 8 bit sample in a 16-bit half-frame
+    _8BitIn16,
+    /// 8 bit sample in a 32-bit half-frame
+    _8BitIn32,
+    /// 16 bit sample in a 32-bit half-frame
+    _16BitIn32,
+    /// 24 bit sample in a 32-bit half-frame
+    _24BitIn32,
 }
 
 impl From<SampleWidth> for u8 {
@@ -520,8 +541,7 @@ impl<'d, T: Instance> I2S<'d, T> {
             }
         };
 
-        c.swidth
-            .write(|w| unsafe { w.swidth().bits(self.config.sample_width.into()) });
+        c.swidth.write(|w| w.swidth().bits(self.config.sample_width.into()));
         c.align.write(|w| w.align().bit(self.config.align.into()));
         c.format.write(|w| w.format().bit(self.config.format.into()));
         c.channels
