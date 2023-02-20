@@ -22,10 +22,10 @@
     "exti",
   ],
   "rust-analyzer.linkedProjects": [
-    // Uncomment ONE line for the chip you want to work on.
-    // This makes rust-analyzer work on the example crate and all its dependencies.
-    "embassy-stm32/Cargo.toml",
-    // "examples/nrf52840-rtic/Cargo.toml",
+    // Declare for the target you wish to developk
+    // "embassy-executor/Cargo.toml",
+    // "embassy-sync/Cargo.toml",
+    "examples/nrf52840/Cargo.toml",
     // "examples/nrf5340/Cargo.toml",
     // "examples/nrf-rtos-trace/Cargo.toml",
     // "examples/rp/Cargo.toml",

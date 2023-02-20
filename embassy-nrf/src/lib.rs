@@ -44,7 +44,12 @@ pub mod buffered_uarte;
 pub mod gpio;
 #[cfg(feature = "gpiote")]
 pub mod gpiote;
-#[cfg(any(feature = "nrf52832", feature = "nrf52833", feature = "nrf52840"))]
+#[cfg(any(
+    feature = "nrf52832",
+    feature = "nrf52833",
+    feature = "nrf52840",
+    feature = "nrf5340-app-s"
+))]
 pub mod i2s;
 pub mod nvmc;
 #[cfg(any(
