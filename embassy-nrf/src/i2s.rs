@@ -302,6 +302,16 @@ pub enum SampleWidth {
     _16bit,
     /// 24 bit samples.
     _24bit,
+    /// 32 bit samples.
+    _32bit,
+    /// 8 bit sample in a 16-bit half-frame
+    _8BitIn16,
+    /// 8 bit sample in a 32-bit half-frame
+    _8BitIn32,
+    /// 16 bit sample in a 32-bit half-frame
+    _16BitIn32,
+    /// 24 bit sample in a 32-bit half-frame
+    _24BitIn32,
 }
 
 impl From<SampleWidth> for u8 {
