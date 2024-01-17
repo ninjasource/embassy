@@ -13,14 +13,13 @@
   // uncomment the target of your chip.
   //"rust-analyzer.cargo.target": "thumbv6m-none-eabi",
   //"rust-analyzer.cargo.target": "thumbv7m-none-eabi",
-  //"rust-analyzer.cargo.target": "thumbv7em-none-eabi",
+  // "rust-analyzer.cargo.target": "thumbv7em-none-eabi",
   "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
   "rust-analyzer.cargo.features": [
     //  "stm32f103c8",
     //  "time-driver-any",
     //  "unstable-pac",
     //  "exti",
-    "nrf5340-app-s"
   ],
   "rust-analyzer.linkedProjects": [
     // Declare for the target you wish to developk

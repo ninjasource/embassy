@@ -14,7 +14,7 @@ use embassy_hal_internal::{into_ref, PeripheralRef};
 
 use crate::gpio::{AnyPin, Pin as GpioPin};
 use crate::interrupt::typelevel::Interrupt;
-use crate::pac::i2s::RegisterBlock;
+use crate::pac::i2s0::RegisterBlock;
 use crate::util::{slice_in_ram_or, slice_ptr_parts};
 use crate::{interrupt, Peripheral, EASY_DMA_SIZE};
 
@@ -1199,7 +1199,7 @@ pub trait Instance: Peripheral<P = Self> + sealed::Instance + 'static + Send {
 macro_rules! impl_i2s {
     ($type:ident, $pac_type:ident, $irq:ident) => {
         impl crate::i2s::sealed::Instance for peripherals::$type {
-            fn regs() -> &'static crate::pac::i2s::RegisterBlock {
+            fn regs() -> &'static crate::pac::i2s0::RegisterBlock {
                 unsafe { &*pac::$pac_type::ptr() }
             }
             fn state() -> &'static crate::i2s::sealed::State {
