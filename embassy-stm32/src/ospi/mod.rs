@@ -7,11 +7,6 @@ pub mod enums;
 
 use core::marker::PhantomData;
 
-use embassy_embedded_hal::{GetConfig, SetConfig};
-use embassy_hal_internal::{into_ref, PeripheralRef};
-pub use enums::*;
-use stm32_metapac::octospi::vals::{PhaseMode, SizeInBits};
-
 use crate::dma::{word, ChannelAndRequest};
 use crate::gpio::{AfType, AnyPin, OutputType, Pull, SealedPin as _, Speed};
 use crate::mode::{Async, Blocking, Mode as PeriMode};
@@ -19,7 +14,141 @@ use crate::pac::octospi::{vals, Octospi as Regs};
 #[cfg(octospim_v1)]
 use crate::pac::octospim::Octospim;
 use crate::rcc::{self, RccPeripheral};
+use crate::time::Hertz;
 use crate::{peripherals, Peripheral};
+use embassy_embedded_hal::{GetConfig, SetConfig};
+use embassy_hal_internal::{into_ref, PeripheralRef};
+pub use enums::*;
+use stm32_metapac::octospi::vals::{PhaseMode, SizeInBits};
+
+/// Hyperbus config
+pub struct HyperbusConfig {
+    // The frequency
+    pub(crate) frequency: Hertz,
+    size_order: u8,
+    refresh_interval_micros: u32,
+    chip_select_high: u8,
+    read_write_recovery: u8,
+    access_initial_latency: u8,
+}
+
+/// Copied from stm32h7xx-hal
+impl HyperbusConfig {
+    /// Create a default Hyperbus configuration.
+    ///
+    /// # Arguments
+    ///
+    /// `frequency` - Bus clock frequency for the hyperbus interface.
+    ///
+    /// # Defaults
+    ///
+    /// * Device Size = 23 (8 MByte)
+    /// * Refresh Interval = 4µs
+    /// * Chip select high between transactions = 4
+    /// * Read-write recovery = 4
+    /// * Access initial latency = 6
+    pub fn new(frequency: Hertz) -> Self {
+        HyperbusConfig {
+            frequency,
+            size_order: 23, // 8 MByte
+            refresh_interval_micros: 4,
+            chip_select_high: 4,       // 40ns @ 100MHz
+            read_write_recovery: 4,    // 40ns @ 100MHz
+            access_initial_latency: 6, // 60ns @ 100MHz
+        }
+    }
+
+    /// Number of bytes in the device, expressed as a power of 2.
+    ///
+    /// | Value | Memory Size (Bytes) | Memory Size (bits)
+    /// |-------|---------------------|-------------------
+    /// | 23    | 8 MByte             | 64 Mbit
+    /// | 24    | 16 MByte            | 128 Mbit
+    /// | ...   |                     |
+    ///
+    /// ```
+    /// let hyperbusconfig = hyperbusconfig.device_size(23);
+    /// ```
+    pub fn device_size_bytes(mut self, size_order: u8) -> Self {
+        debug_assert!(size_order > 4, "Memory size must be at least 32 bytes");
+        debug_assert!(size_order <= 28, "Maximum memory size that can be mapped is 256 MBytes");
+
+        self.size_order = size_order;
+        self
+    }
+
+    /// The refresh interval sets an upper limit on the length of read and write
+    /// transactions, so that the distributed refresh mechanism in the memory
+    /// can operate.
+    ///
+    /// Typically calculated by dividing the array refresh interval by the
+    /// number of rows in the array, with some margin. Called t_CSM in the
+    /// memory datasheet.
+    ///
+    /// Set to zero to disable the upper limit on the length of read and write
+    /// transactions. In this case you become reponsible for issuing the reads
+    /// needed to cover the required refreshes.
+    ///
+    /// ```
+    /// let hyperbusconfig = hyperbusconfig.refresh_interval(4.us());
+    /// ```
+    pub fn refresh_interval(mut self, refresh_interval_micros: u32) -> Self {
+        self.refresh_interval_micros = refresh_interval_micros;
+        self
+    }
+
+    /// Chip select high time t_CSHI between transactions in clock cycles
+    ///
+    /// The chip select high time between transactions is specified in the
+    /// memory datasheet. This should be converted to clock cycles based on the
+    /// maximum bus frequency. The minimum is one cycle.
+    ///
+    /// ```
+    /// let hyperbusconfig = hyperbusconfig.chip_select_high(4);
+    /// ```
+    pub fn chip_select_high(mut self, chip_select_high: u8) -> Self {
+        debug_assert!(
+            chip_select_high > 0,
+            "There is a minimum of one clock cycle between transcations"
+        );
+        #[cfg(feature = "rm0468")]
+        debug_assert!(chip_select_high <= 64, "Maximum 64 cycles between transcations");
+        #[cfg(not(feature = "rm0468"))]
+        debug_assert!(chip_select_high <= 8, "Maximum 8 cycles between transcations");
+
+        self.chip_select_high = chip_select_high;
+        self
+    }
+
+    /// Read-write recovery time t_RWR in clock cycles
+    ///
+    /// The read-write recovery time is specified in the memory datasheet. This
+    /// should be converted to clock cycles based on the maximum bus frequency.
+    ///
+    /// ```
+    /// let hyperbusconfig = hyperbusconfig.read_write_recovery(4);
+    /// ```
+    pub fn read_write_recovery(mut self, read_write_recovery: u8) -> Self {
+        self.read_write_recovery = read_write_recovery;
+        self
+    }
+
+    /// Initial access time t_ACC in clock cycles
+    ///
+    /// This parameter is given as a time period in the memory timing
+    /// characteristics. However there is typically a default number of clock
+    /// cycles used by the memory which can only be changed through a
+    /// re-configuration. This parameter must be set equal to the currently
+    /// configured number of cycles.
+    ///
+    /// ```
+    /// let hyperbusconfig = hyperbusconfig.access_initial_latency(6);
+    /// ```
+    pub fn access_initial_latency(mut self, access_initial_latency: u8) -> Self {
+        self.access_initial_latency = access_initial_latency;
+        self
+    }
+}
 
 /// OPSI driver config.
 #[derive(Clone, Copy)]
@@ -857,6 +986,148 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
 }
 
 impl<'d, T: Instance> Ospi<'d, T, Async> {
+    /// Create new OSPI driver for octospi external chips running in hyperbus mode
+    pub fn new_hyperbus_octospi(
+        peri: impl Peripheral<P = T> + 'd,
+        sck: impl Peripheral<P = impl SckPin<T>> + 'd,
+        d0: impl Peripheral<P = impl D0Pin<T>> + 'd,
+        d1: impl Peripheral<P = impl D1Pin<T>> + 'd,
+        d2: impl Peripheral<P = impl D2Pin<T>> + 'd,
+        d3: impl Peripheral<P = impl D3Pin<T>> + 'd,
+        d4: impl Peripheral<P = impl D4Pin<T>> + 'd,
+        d5: impl Peripheral<P = impl D5Pin<T>> + 'd,
+        d6: impl Peripheral<P = impl D6Pin<T>> + 'd,
+        d7: impl Peripheral<P = impl D7Pin<T>> + 'd,
+        nss: impl Peripheral<P = impl NSSPin<T>> + 'd,
+        dqs: impl Peripheral<P = impl DQSPin<T>> + 'd,
+        config: HyperbusConfig,
+    ) -> Self {
+        into_ref!(peri);
+
+        // System configuration
+        rcc::enable_and_reset::<T>();
+
+        // wait for ready
+        while T::REGS.sr().read().busy() {}
+
+        T::REGS.cr().write(|w| {
+            w.set_fmode(vals::FunctionalMode::MEMORYMAPPED);
+            w.set_fthres(3.into());
+        });
+
+        let spi_frequency = config.frequency.0;
+        let spi_kernel_ck = 200_000_000u32; // this is hardcoded for now. TODO: FIX THIS!!!!!!
+        let divisor = match (spi_kernel_ck + spi_frequency - 1) / spi_frequency {
+            divisor @ 1..=256 => divisor as u8,
+            _ => panic!("Invalid OCTOSPI frequency requested"),
+        };
+        let period_ns = 1e9 * (divisor as f32) / (spi_kernel_ck as f32);
+        let period_ns = period_ns as u32; // floor
+
+        // wait for ready
+        while T::REGS.sr().read().busy() {}
+
+        // clear flags
+        T::REGS.fcr().write(|w| {
+            w.set_ctof(true);
+            w.set_csmf(true);
+            w.set_ctcf(true);
+            w.set_ctef(true);
+        });
+
+        T::REGS.dcr1().write(|w| {
+            w.set_mtyp(vals::MemType::HYPERBUSMEMORY);
+            w.set_devsize(config.size_order);
+            w.set_csht(config.chip_select_high - 1);
+        });
+        T::REGS.dcr2().write(|w| w.set_prescaler(divisor - 1));
+        T::REGS.dcr3().write(|w| w.set_csbound(config.size_order - 1));
+
+        let refresh_cycles = {
+            let interval_ns = config.refresh_interval_micros as u32 * 1000;
+            (interval_ns + period_ns - 1) / period_ns
+        };
+        T::REGS.dcr4().write(|w| w.set_refresh(refresh_cycles));
+
+        T::REGS.ccr().write(|w| {
+            w.set_dqse(true);
+            w.set_ddtr(true);
+            w.set_dmode(PhaseMode::EIGHTLINES);
+            w.set_adsize(SizeInBits::_32BIT);
+            w.set_addtr(true);
+            w.set_admode(PhaseMode::EIGHTLINES);
+        });
+
+        T::REGS.wccr().write(|w| {
+            w.set_dqse(true);
+            w.set_ddtr(true);
+            w.set_dmode(PhaseMode::EIGHTLINES);
+            w.set_adsize(SizeInBits::_32BIT);
+            w.set_addtr(true);
+            w.set_admode(PhaseMode::EIGHTLINES);
+        });
+
+        T::REGS.tcr().write(|w| w.set_dhqc(true));
+
+        T::REGS.hlcr().write(|w| {
+            w.set_trwr(config.read_write_recovery);
+            w.set_tacc(config.access_initial_latency);
+            w.set_wzl(false);
+            w.set_lm(vals::LatencyMode::FIXED);
+        });
+
+        // setup pins
+        let d0 = new_pin!(d0, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d1 = new_pin!(d1, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d2 = new_pin!(d2, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d3 = new_pin!(d3, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d4 = new_pin!(d4, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d5 = new_pin!(d5, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d6 = new_pin!(d6, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let d7 = new_pin!(d7, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let sck = new_pin!(sck, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        let nss = new_pin!(
+            nss,
+            AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+        );
+        let dqs = new_pin!(
+            dqs,
+            AfType::output_pull(OutputType::PushPull, Speed::VeryHigh, Pull::Up)
+        );
+        let dma = None;
+
+        // enable peripheral
+        T::REGS.cr().modify(|w| w.set_en(true));
+
+        // wait for ready
+        while T::REGS.sr().read().busy() {}
+
+        // switch to memory mapped mode
+        T::REGS.cr().modify(|w| w.set_fmode(vals::FunctionalMode::MEMORYMAPPED));
+
+        // wait for ready
+        while T::REGS.sr().read().busy() {}
+
+        Self {
+            _peri: peri,
+            sck,
+            d0,
+            d1,
+            d2,
+            d3,
+            d4,
+            d5,
+            d6,
+            d7,
+            nss,
+            dqs,
+            dma,
+            _phantom: PhantomData,
+            config: Config::default(),
+            width: OspiWidth::OCTO,
+        }
+    }
+
     /// Create new blocking OSPI driver for a single spi external chip
     pub fn new_singlespi(
         peri: impl Peripheral<P = T> + 'd,
@@ -1248,17 +1519,6 @@ impl SealedOctospimInstance for peripherals::OCTOSPI2 {
     const OCTOSPIM_REGS: Octospim = crate::pac::OCTOSPIM;
     const OCTOSPI_IDX: u8 = 2;
 }
-
-#[cfg(octospim_v1)]
-foreach_peripheral!(
-    (octospi, $inst:ident) => {
-        impl SealedInstance for peripherals::$inst {
-            const REGS: Regs = crate::pac::$inst;
-        }
-
-        impl Instance for peripherals::$inst {}
-    };
-);
 
 #[cfg(not(octospim_v1))]
 foreach_peripheral!(
