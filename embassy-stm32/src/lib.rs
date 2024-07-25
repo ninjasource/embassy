@@ -271,6 +271,23 @@ impl Default for Config {
     }
 }
 
+/// Assume that `embassy-stm32` HAL has already been initialized in a bootloader
+///
+/// This returns the peripheral singletons that can be used for creating drivers.
+///
+/// This should only be called once at startup, otherwise it panics.
+pub fn assume_init() -> Peripherals {
+    critical_section::with(|cs| {
+        let p = Peripherals::take_with_cs(cs);
+
+        // must be after rcc init
+        #[cfg(feature = "_time-driver")]
+        time_driver::init(cs);
+
+        p
+    })
+}
+
 /// Initialize the `embassy-stm32` HAL with the provided configuration.
 ///
 /// This returns the peripheral singletons that can be used for creating drivers.
