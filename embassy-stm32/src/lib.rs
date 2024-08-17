@@ -271,14 +271,17 @@ impl Default for Config {
     }
 }
 
-/// Assume that `embassy-stm32` HAL has already been initialized in a bootloader
+/// Assume that `embassy-stm32` HAL has already been initialized (for example in a bootloader)
 ///
 /// This returns the peripheral singletons that can be used for creating drivers.
 ///
 /// This should only be called once at startup, otherwise it panics.
-pub fn assume_init() -> Peripherals {
+/// The clocks passed in are NOT checked with what is actually running so this function is unsafe
+pub unsafe fn assume_init(clocks: rcc::Clocks) -> Peripherals {
     critical_section::with(|cs| {
         let p = Peripherals::take_with_cs(cs);
+
+        unsafe { rcc::set_freqs(clocks) };
 
         // must be after rcc init
         #[cfg(feature = "_time-driver")]
