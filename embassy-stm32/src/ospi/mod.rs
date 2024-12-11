@@ -7,6 +7,11 @@ pub mod enums;
 
 use core::marker::PhantomData;
 
+use embassy_embedded_hal::{GetConfig, SetConfig};
+use embassy_hal_internal::{into_ref, PeripheralRef};
+pub use enums::*;
+use stm32_metapac::octospi::vals::{PhaseMode, SizeInBits};
+
 use crate::dma::{word, ChannelAndRequest};
 use crate::gpio::{AfType, AnyPin, OutputType, Pull, SealedPin as _, Speed};
 use crate::mode::{Async, Blocking, Mode as PeriMode};
@@ -1519,6 +1524,17 @@ impl SealedOctospimInstance for peripherals::OCTOSPI2 {
     const OCTOSPIM_REGS: Octospim = crate::pac::OCTOSPIM;
     const OCTOSPI_IDX: u8 = 2;
 }
+
+#[cfg(octospim_v1)]
+foreach_peripheral!(
+    (octospi, $inst:ident) => {
+        impl SealedInstance for peripherals::$inst {
+            const REGS: Regs = crate::pac::$inst;
+        }
+
+        impl Instance for peripherals::$inst {}
+    };
+);
 
 #[cfg(not(octospim_v1))]
 foreach_peripheral!(
