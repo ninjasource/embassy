@@ -1,28 +1,34 @@
 #![no_std]
 #![no_main]
 #![macro_use]
-#![allow(static_mut_refs)]
 
 /// This example demonstrates the LTDC lcd display peripheral and was tested to run on an stm32h735g-dk (embassy-stm32 feature "stm32h735ig" and probe-rs chip "STM32H735IGKx")
 /// Even though the dev kit has 16MB of attached PSRAM this example uses the 320KB of internal AXIS RAM found on the mcu itself to make the example more standalone and portable.
 /// For this reason a 256 color lookup table had to be used to keep the memory requirement down to an acceptable level.
+/// However, if you want to use larger frame buffers please take a look at the hyperbus example.
 /// The example bounces a ferris crab bitmap around the screen while blinking an led on another task
 ///
+use core::mem::MaybeUninit;
+
 use bouncy_box::BouncyBox;
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::ltdc::{self, Ltdc, LtdcConfiguration, LtdcLayer, LtdcLayerConfig, PolarityActive, PolarityEdge};
-use embassy_stm32::{bind_interrupts, peripherals};
+use embassy_stm32::{
+    bind_interrupts,
+    gpio::{Level, Output, Speed},
+    ltdc::{self, Ltdc, LtdcConfiguration, LtdcLayer, LtdcLayerConfig, PolarityActive, PolarityEdge},
+    peripherals,
+};
 use embassy_time::{Duration, Timer};
-use embedded_graphics::draw_target::DrawTarget;
-use embedded_graphics::geometry::{OriginDimensions, Point, Size};
-use embedded_graphics::image::Image;
-use embedded_graphics::pixelcolor::raw::RawU24;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::Rectangle;
-use embedded_graphics::Pixel;
+use embedded_graphics::{
+    draw_target::DrawTarget,
+    geometry::{OriginDimensions, Point, Size},
+    image::Image,
+    pixelcolor::{raw::RawU24, Rgb888},
+    prelude::*,
+    primitives::Rectangle,
+    Pixel,
+};
 use heapless::{Entry, FnvIndexMap};
 use tinybmp::Bmp;
 use {defmt_rtt as _, panic_probe as _};
@@ -32,8 +38,8 @@ const DISPLAY_HEIGHT: usize = 272;
 const MY_TASK_POOL_SIZE: usize = 2;
 
 // the following two display buffers consume 261120 bytes that just about fits into axis ram found on the mcu
-pub static mut FB1: [TargetPixelType; DISPLAY_WIDTH * DISPLAY_HEIGHT] = [0; DISPLAY_WIDTH * DISPLAY_HEIGHT];
-pub static mut FB2: [TargetPixelType; DISPLAY_WIDTH * DISPLAY_HEIGHT] = [0; DISPLAY_WIDTH * DISPLAY_HEIGHT];
+pub static mut FB1: MaybeUninit<[TargetPixelType; DISPLAY_WIDTH * DISPLAY_HEIGHT]> = MaybeUninit::uninit();
+pub static mut FB2: MaybeUninit<[TargetPixelType; DISPLAY_WIDTH * DISPLAY_HEIGHT]> = MaybeUninit::uninit();
 
 bind_interrupts!(struct Irqs {
     LTDC => ltdc::InterruptHandler<peripherals::LTDC>;
@@ -43,7 +49,7 @@ const NUM_COLORS: usize = 256;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let p = rcc_setup::stm32h735g_init();
+    let p = rcc_setup::stm32h735g_hse_init();
 
     // blink the led on another task
     let led = Output::new(p.PC3, Level::High, Speed::Low);
@@ -97,14 +103,19 @@ async fn main(spawner: Spawner) {
     // enable the bottom layer with a 256 color lookup table
     ltdc.init_layer(&layer_config, Some(&clut));
 
-    // Safety: the DoubleBuffer controls access to the statically allocated frame buffers
-    // and it is the only thing that mutates their content
-    let mut double_buffer = DoubleBuffer::new(
-        unsafe { FB1.as_mut() },
-        unsafe { FB2.as_mut() },
-        layer_config,
-        color_map,
-    );
+    // Safety: this is the only place we get a mutable reference to FB1
+    let fb1 = unsafe {
+        FB1.write([TargetPixelType::default(); DISPLAY_WIDTH * DISPLAY_HEIGHT]);
+        FB1.assume_init_mut()
+    };
+
+    // Safety: this is the only place we get a mutable reference to FB2
+    let fb2 = unsafe {
+        FB2.write([TargetPixelType::default(); DISPLAY_WIDTH * DISPLAY_HEIGHT]);
+        FB2.assume_init_mut()
+    };
+
+    let mut double_buffer = DoubleBuffer::new(fb1, fb2, layer_config, color_map);
 
     // this allows us to perform some simple animation for every frame
     let mut bouncy_box = BouncyBox::new(
@@ -283,31 +294,9 @@ mod rcc_setup {
     use embassy_stm32::time::Hertz;
     use embassy_stm32::{Config, Peripherals};
 
-    /// Sets up clocks for the stm32h735g mcu
+    /// Sets up clocks for the stm32h735g mcu using the external oscillator
     /// change this if you plan to use a different microcontroller
-    pub fn stm32h735g_init() -> Peripherals {
-        /*
-         https://github.com/STMicroelectronics/STM32CubeH7/blob/master/Projects/STM32H735G-DK/Examples/GPIO/GPIO_EXTI/Src/main.c
-         @brief  System Clock Configuration
-            The system Clock is configured as follow :
-            System Clock source            = PLL (HSE)
-            SYSCLK(Hz)                     = 520000000 (CPU Clock)
-            HCLK(Hz)                       = 260000000 (AXI and AHBs Clock)
-            AHB Prescaler                  = 2
-            D1 APB3 Prescaler              = 2 (APB3 Clock  130MHz)
-            D2 APB1 Prescaler              = 2 (APB1 Clock  130MHz)
-            D2 APB2 Prescaler              = 2 (APB2 Clock  130MHz)
-            D3 APB4 Prescaler              = 2 (APB4 Clock  130MHz)
-            HSE Frequency(Hz)              = 25000000
-            PLL_M                          = 5
-            PLL_N                          = 104
-            PLL_P                          = 1
-            PLL_Q                          = 4
-            PLL_R                          = 2
-            VDD(V)                         = 3.3
-            Flash Latency(WS)              = 3
-        */
-
+    pub fn stm32h735g_hse_init() -> Peripherals {
         // setup power and clocks for an stm32h735g-dk run from an external 25 Mhz external oscillator
         let mut config = Config::default();
         config.rcc.hse = Some(Hse {
