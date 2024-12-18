@@ -236,7 +236,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             w.set_isize(SizeInBits::from_bits(write_config.isize.into()));
 
             w.set_admode(PhaseMode::from_bits(write_config.adwidth.into()));
-            w.set_addtr(write_config.idtr);
+            w.set_addtr(write_config.addtr);
             w.set_adsize(SizeInBits::from_bits(write_config.adsize.into()));
 
             w.set_dmode(PhaseMode::from_bits(write_config.dwidth.into()));
@@ -951,6 +951,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             addtr: true,
             adsize: AddressSize::_32bit,
             dwidth: OspiWidth::OCTO,
+            abdtr: false,
             ddtr: true,
             ..Default::default()
         };
@@ -962,6 +963,7 @@ impl<'d, T: Instance> Ospi<'d, T, Blocking> {
             addtr: true,
             adsize: AddressSize::_32bit,
             dwidth: OspiWidth::OCTO,
+            abdtr: false,
             ddtr: true,
             ..Default::default()
         };
