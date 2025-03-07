@@ -185,6 +185,7 @@ impl<'d, T: Instance> Ltdc<'d, T> {
     }
 
     /// Create a new LTDC driver. 8 pins per color channel for blue, green and red
+    /// Note: LCD cables are exposed and you may need to use a lower rise_fall_speed to reduce EMI
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_pins(
         peri: impl Peripheral<P = T> + 'd,
@@ -192,6 +193,7 @@ impl<'d, T: Instance> Ltdc<'d, T> {
         clk: impl Peripheral<P = impl ClkPin<T>> + 'd,
         hsync: impl Peripheral<P = impl HsyncPin<T>> + 'd,
         vsync: impl Peripheral<P = impl VsyncPin<T>> + 'd,
+        de: impl Peripheral<P = impl DePin<T>> + 'd,
         b0: impl Peripheral<P = impl B0Pin<T>> + 'd,
         b1: impl Peripheral<P = impl B1Pin<T>> + 'd,
         b2: impl Peripheral<P = impl B2Pin<T>> + 'd,
@@ -216,36 +218,38 @@ impl<'d, T: Instance> Ltdc<'d, T> {
         r5: impl Peripheral<P = impl R5Pin<T>> + 'd,
         r6: impl Peripheral<P = impl R6Pin<T>> + 'd,
         r7: impl Peripheral<P = impl R7Pin<T>> + 'd,
+        rise_fall_speed: Speed,
     ) -> Self {
         Self::setup_clocks();
         into_ref!(peri);
-        new_pin!(clk, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(hsync, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(vsync, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b0, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b1, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b2, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b3, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b4, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b5, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b6, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(b7, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g0, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g1, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g2, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g3, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g4, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g5, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g6, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(g7, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r0, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r1, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r2, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r3, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r4, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r5, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r6, AfType::output(OutputType::PushPull, Speed::VeryHigh));
-        new_pin!(r7, AfType::output(OutputType::PushPull, Speed::VeryHigh));
+        new_pin!(clk, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(hsync, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(vsync, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(de, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b0, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b1, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b2, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b3, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b4, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b5, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b6, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(b7, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g0, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g1, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g2, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g3, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g4, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g5, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g6, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(g7, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r0, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r1, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r2, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r3, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r4, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r5, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r6, AfType::output(OutputType::PushPull, rise_fall_speed));
+        new_pin!(r7, AfType::output(OutputType::PushPull, rise_fall_speed));
 
         Self { _peri: peri }
     }
@@ -417,6 +421,7 @@ impl<'d, T: Instance> Ltdc<'d, T> {
     /// frame_buffer_addr is a pointer to memory that should not move (best to make it static)
     pub async fn set_buffer(&mut self, layer: LtdcLayer, frame_buffer_addr: *const ()) -> Result<(), Error> {
         let mut bits = T::regs().isr().read();
+        //info!("sending: 0x{:x}", frame_buffer_addr);
 
         // if all clear
         if !bits.fuif() && !bits.lif() && !bits.rrif() && !bits.terrif() {

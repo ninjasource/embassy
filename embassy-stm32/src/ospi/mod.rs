@@ -371,9 +371,10 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             w.set_refresh(config.refresh);
         });
 
+        /*
         T::REGS.cr().modify(|w| {
             w.set_fthres(vals::Threshold(config.fifo_threshold.into()));
-        });
+        });*/
 
         // Wait for busy flag to clear
         while T::REGS.sr().read().busy() {}
@@ -642,9 +643,10 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             w.set_refresh(config.refresh);
         });
 
+        /*
         T::REGS.cr().modify(|w| {
-            w.set_fthres(vals::Threshold(config.fifo_threshold.into()));
-        });
+            //  w.set_fthres(vals::Threshold(config.fifo_threshold.into()));
+        });*/
 
         // Wait for busy flag to clear
         while T::REGS.sr().read().busy() {}
