@@ -22,45 +22,18 @@ use crate::{peripherals, rcc, Peripheral};
 
 static DMA2D_WAKER: AtomicWaker = AtomicWaker::new();
 
-/// Pixel offsets to be used when copying images
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-struct MemToMemPixelOffsets {
-    /// Number of pixels to jump after each line
-    pub output_offset: u16,
-
-    /// Number of pixels to skip on each line when reading an imaged that is clipped to the right
-    pub line_offset: u16,
-
-    /// Number of pixels to skip before reading image data (should be multiplied by bytes_per_pixel to offset the memory address
-    pub src_offset: u32,
-
-    /// Number of pixels to skip before writing image data to the frame buffer
-    pub dst_offset: u32,
-
-    /// Width with clipping applied
-    pub width: u16,
-
-    /// Height with clipping applied
-    pub height: u16,
-}
-
 /// Output color
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum OutputColor {
     /// ARGB8888 color
     Argb8888(OcArgb8888),
-
     /// RGB888 color
     Rgb888(OcRgb888),
-
     /// RGB565 color
     Rgb565(OcRgb565),
-
     /// ARGB1555 color
     Argb1555(OcArgb1555),
-
     /// ARGB444 color
     Argb4444(OcArgb4444),
 }
@@ -172,119 +145,109 @@ const fn shift_u32(value: u8, num_bits: usize, shift_by: usize) -> u32 {
     ((value & max) as u32) << shift_by
 }
 
-impl MemToMemPixelOffsets {
-    /// Considers how an image is placed in the screen and calculates the required pixel offsets needed to setup the dma
-    pub fn calculate(
-        image_x: i32,
-        image_y: i32,
-        image_width: u16,
-        image_height: u16,
-        screen_width: u16,
-        screen_height: u16,
-    ) -> Option<Self> {
-        let right_clip = screen_width as i32 - image_x;
-        let bottom_clip = screen_height as i32 - image_y;
-        let left_clip = image_width as i32 + image_x;
-        let top_clip = image_height as i32 + image_y;
+#[derive(Debug)]
+struct ImgOffsets {
+    pub line_offset: u16,
+    pub start_offset: usize,
+}
 
-        if right_clip < 0 || bottom_clip < 0 || left_clip < 0 || top_clip < 0 {
-            // nothing to draw as rectangle is out of bounds
-            return None;
-        }
-
-        let right_clip = right_clip as u16;
-        let bottom_clip = bottom_clip as u16;
-        let left_clip = left_clip as u16;
-        let top_clip = top_clip as u16;
-
-        let x = if image_x < 0 { 0 } else { image_x as u32 };
-        let y = if image_y < 0 { 0 } else { image_y as u32 };
-
-        // clip the width and height if they go past the edge of the screen
-        let width = image_width.min(right_clip).min(left_clip);
-        let height = image_height.min(bottom_clip).min(top_clip);
-
-        let src_offset_x = if image_x < 0 { image_x.abs() } else { 0 };
-        let src_offset_y = if image_y < 0 { image_y.abs() } else { 0 };
-
-        let output_offset = screen_width - width; // number of pixels to jump after each line
-        let src_offset = src_offset_x as u32 + src_offset_y as u32 * image_width as u32;
-        let dst_offset = x + y * screen_width as u32; // number of pixels to skip from the top left of screen
-        let line_offset = image_width - width; // if image is clipped to the right
-
-        /*
-        info!(
-            "x: {} y: {} width: {} height: {}, output_offset: {}, line_offset: {}, src_offset: {}, dst_offset: {}, left_clip: {}, top_clip: {}",
-            image.x, image.y, width, height, output_offset, line_offset, src_offset, dst_offset,left_clip, top_clip
-        );*/
-
-        Some(Self {
-            output_offset,
+impl ImgOffsets {
+    pub fn new(line_offset: u16, start_offset: usize) -> Self {
+        Self {
             line_offset,
-            src_offset,
-            dst_offset,
-            width,
-            height,
-        })
+            start_offset,
+        }
     }
 }
 
-/// Pixel offsets to be used using RegisterToMemory operations
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-struct RegToMemPixelOffsets {
-    /// Number of pixels to jump after each line
-    pub output_offset: u16,
-    /// Number of pixels to skip before writing data to the frame buffer
-    pub dst_offset: u32,
-    /// Width with clipping applied
+struct Offsets {
+    pub src: ImgOffsets,
+    pub dst: ImgOffsets,
     pub width: u16,
-    /// Height with clipping applied
     pub height: u16,
 }
 
-impl RegToMemPixelOffsets {
-    /// Considers how a filled rectangle is placed in the screen and calculates the required pixel offsets needed to setup the dma
-    pub fn calculate(
-        rect_x: i32,
-        rect_y: i32,
-        rect_width: u16,
-        rect_height: u16,
-        screen_width: u16,
-        screen_height: u16,
-    ) -> Option<Self> {
-        let right_clip = screen_width as i32 - rect_x;
-        let bottom_clip = screen_height as i32 - rect_y;
-        let left_clip = rect_width as i32 + rect_x;
-        let top_clip = rect_height as i32 + rect_y;
+fn calculate_offsets(
+    src_x: i32,
+    src_y: i32,
+    src_width: u16,
+    src_height: u16,
+    dst_width: u16,
+    dst_height: u16,
+) -> Option<Offsets> {
+    let x0 = src_x.max(0);
+    let x1 = (src_x + src_width as i32).min(dst_width as i32);
+    let y0 = src_y.max(0);
+    let y1 = (src_y + src_height as i32).min(dst_height as i32);
 
-        if right_clip < 0 || bottom_clip < 0 || left_clip < 0 || top_clip < 0 {
-            // nothing to draw as rectangle is out of bounds
-            return None;
-        }
+    let width = x1 - x0;
+    let height = y1 - y0;
 
-        let right_clip = right_clip as u16;
-        let bottom_clip = bottom_clip as u16;
-        let left_clip = left_clip as u16;
-        let top_clip = top_clip as u16;
+    if width < 0 || height < 0 {
+        // out of bounds
+        None
+    } else {
+        let src1_offsets = ImgOffsets::new(
+            src_width - width as u16,
+            ((x0 - src_x) + (y0 - src_y) * src_width as i32) as usize,
+        );
+        let dst_offsets = ImgOffsets::new(dst_width - width as u16, (x0 + y0 * dst_width as i32) as usize);
+        let offsets = Offsets {
+            src: src1_offsets,
+            dst: dst_offsets,
+            width: width as u16,
+            height: height as u16,
+        };
+        Some(offsets)
+    }
+}
 
-        let x = if rect_x < 0 { 0 } else { rect_x as u32 };
-        let y = if rect_y < 0 { 0 } else { rect_y as u32 };
+struct OffsetsMulti {
+    pub fg: ImgOffsets,
+    pub bg: ImgOffsets,
+    pub dst: ImgOffsets,
+    pub width: u16,
+    pub height: u16,
+}
 
-        // clip the width and height if they go past the edge of the screen
-        let width = rect_width.min(right_clip).min(left_clip);
-        let height = rect_height.min(bottom_clip).min(top_clip);
+fn calculate_offsets_multi<T0, T1, T2>(
+    src1: &SrcFgImage<'_, T0>,
+    scr2: &SrcBgImage<'_, T1>,
+    dst: &DstBuffer<'_, T2>,
+) -> Option<OffsetsMulti> {
+    let x0 = src1.x.max(scr2.x).max(0);
+    let x1 = (src1.x + src1.width as i32)
+        .min(scr2.x + scr2.width as i32)
+        .min(dst.width as i32);
+    let y0 = src1.y.max(scr2.y).max(0);
+    let y1 = (src1.y + src1.height as i32)
+        .min(scr2.y + scr2.height as i32)
+        .min(dst.height as i32);
 
-        // clip the width and height if they go past the edge of the screen
-        let output_offset = screen_width - width; // number of pixels to jump after each line
-        let dst_offset = x as u32 + y as u32 * screen_width as u32; // number of pixels to skip from the top left of screen
+    let width = x1 - x0;
+    let height = y1 - y0;
 
-        Some(Self {
-            output_offset,
-            dst_offset,
-            width,
-            height,
-        })
+    if width < 0 || height < 0 {
+        // out of bounds
+        None
+    } else {
+        let src1_offsets = ImgOffsets::new(
+            src1.width as u16 - width as u16,
+            ((x0 - src1.x) + (y0 - src1.y) * src1.width as i32) as usize,
+        );
+        let src2_offsets = ImgOffsets::new(
+            scr2.width as u16 - width as u16,
+            ((x0 - scr2.x) + (y0 - scr2.y) * scr2.width as i32) as usize,
+        );
+        let dst_offsets = ImgOffsets::new(dst.width as u16 - width as u16, (x0 + y0 * dst.width as i32) as usize);
+        let offsets = OffsetsMulti {
+            fg: src1_offsets,
+            bg: src2_offsets,
+            dst: dst_offsets,
+            width: width as u16,
+            height: height as u16,
+        };
+        Some(offsets)
     }
 }
 
@@ -294,22 +257,16 @@ impl RegToMemPixelOffsets {
 struct Dma2dConfiguration {
     /// Transfer mode
     pub transfer_mode: TransferMode,
-
     /// Color format of the output image
     pub color_mode: ColorMode,
-
     /// Offset value between 0x0000 and 0x3FFF. This value is used for the address generation. It is added at the end of each line to determine the starting address of the next line.
     pub output_offset: u16,
-
     /// Regular or inverted alpha value for the output pixel format converter
     pub alpha_inverted: AlphaInversion,
-
     /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
     pub red_blue_swap: RedBlueSwap,
-
     /// Byte regular mode or bytes swap mode (two by two)
     pub bytes_swap: BytesSwap,
-
     /// Line offset for the foreground, background and output_offset
     pub line_offset_mode: LineOffsetMode,
 }
@@ -353,27 +310,20 @@ enum TransferMode {
 pub enum Error {
     /// CLUT access error
     ClutAccessError,
-
     /// Configuration error
     /// Refer to reference manual "rm0456" | "DMA2D configuration" | "Configuration error detection" for all the possible causes of this error
     /// For example, you will get a configuration error if the src and dst buffers are not correctly aligned in memory
     ConfigurationError,
-
     /// Transfer error
     TransferError,
-
     /// Unexpected result
     Unexpected(&'static str),
-
     /// Invalid source data
     InvalidSourceData(&'static str),
-
     /// Output color pixel data type does not match destination buffer
     OutputColorTypeMismatch(&'static str),
-
     /// Invalid destination buffer
     InvalidDestBuffer(&'static str),
-
     /// Destination buffer is not 4 byte alligned which is required for DMA2D
     DstBufferNotAligned,
 }
@@ -422,14 +372,6 @@ pub enum FgColorMode {
     A4,
     /// YCbCr
     YcbCr,
-}
-
-/// Source data
-enum SourceData {
-    /// Output color used for RegisterToMemory transfers
-    OutputColor(OutputColor),
-    /// Source address used for all other transfers besides RegisterToMemory
-    SrcAddress(u32),
 }
 
 /// Background layer color mode
@@ -613,16 +555,12 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 pub struct FilledRect {
     /// top left x (negative is out of bounds and allowed)
     pub x: i32,
-
     /// top left y (negative is out of bounds and allowed)
     pub y: i32,
-
     /// width in pixels
     pub width: u16,
-
     /// height in pixels
     pub height: u16,
-
     /// fill color
     pub color: OutputColor,
 }
@@ -640,30 +578,55 @@ impl FilledRect {
     }
 }
 
-/// Source image
-pub struct SrcImage<'a, TSrcPixel> {
+/// Source foreground image
+pub struct SrcFgImage<'a, TSrcPixel> {
     /// memory address of start of the image buffer
     pub addr: &'a [TSrcPixel],
-
     /// top left x (negative is out of bounds and allowed)
     pub x: i32,
-
     /// top left y (negative is out of bounds and allowed)
     pub y: i32,
-
     /// width in pixels
     pub width: u16,
-
     /// height in pixels
     pub height: u16,
-
     /// color format of the pixels in the buffer
     pub color_mode: FgColorMode,
 }
 
-impl<'a, TSrcPixel> SrcImage<'a, TSrcPixel> {
+impl<'a, TSrcPixel> SrcFgImage<'a, TSrcPixel> {
     /// Creates a new instance of the source
     pub fn new(addr: &'a [TSrcPixel], x: i32, y: i32, width: u16, height: u16, color_mode: FgColorMode) -> Self {
+        Self {
+            addr,
+            x,
+            y,
+            width,
+            height,
+            color_mode,
+        }
+    }
+}
+
+/// Source background image
+pub struct SrcBgImage<'a, TSrcPixel> {
+    /// memory address of start of the image buffer
+    pub addr: &'a [TSrcPixel],
+    /// top left x (negative is out of bounds and allowed)
+    pub x: i32,
+    /// top left y (negative is out of bounds and allowed)
+    pub y: i32,
+    /// width in pixels
+    pub width: u16,
+    /// height in pixels
+    pub height: u16,
+    /// color format of the pixels in the buffer
+    pub color_mode: BgColorMode,
+}
+
+impl<'a, TSrcPixel> SrcBgImage<'a, TSrcPixel> {
+    /// Creates a new instance of the source
+    pub fn new(addr: &'a [TSrcPixel], x: i32, y: i32, width: u16, height: u16, color_mode: BgColorMode) -> Self {
         Self {
             addr,
             x,
@@ -679,13 +642,10 @@ impl<'a, TSrcPixel> SrcImage<'a, TSrcPixel> {
 pub struct DstBuffer<'a, TPixel> {
     /// memory address of start of buffer
     pub addr: &'a mut [TPixel],
-
     /// width in pixels
     pub width: u16,
-
     /// height in pixels
     pub height: u16,
-
     /// color format of the pixels in the buffer
     pub color_mode: ColorMode,
 }
@@ -706,10 +666,8 @@ impl<'a, TPixel> DstBuffer<'a, TPixel> {
 pub struct LayerColor {
     /// Red
     pub red: u8,
-
     /// Green
     pub green: u8,
-
     /// Blue
     pub blue: u8,
 }
@@ -722,15 +680,13 @@ impl LayerColor {
 }
 
 /// Blend source
-pub enum BlendSrc<'a, TSrc1Pixel, TSrc2Pixel> {
+pub enum BlendSrc<'a, TSrcFgPixel, TSrcBgPixel> {
     /// Blend foreground fixed color with background image
-    BlendFgFixedColor(LayerColor, SrcImage<'a, TSrc2Pixel>),
-
+    BlendFgFixedColorBgImg(LayerColor, SrcBgImage<'a, TSrcBgPixel>),
     /// Blend foreground image with background fixed color
-    BlendBgFixedColor(SrcImage<'a, TSrc1Pixel>, LayerColor),
-
+    BlendFgImgBgFixedColor(SrcFgImage<'a, TSrcFgPixel>, LayerColor),
     /// Blend foreground image with background image
-    BlendFgBg(SrcImage<'a, TSrc1Pixel>, SrcImage<'a, TSrc2Pixel>),
+    BlendFgImgBgImg(SrcFgImage<'a, TSrcFgPixel>, SrcBgImage<'a, TSrcBgPixel>),
 }
 
 impl<'d, T: Instance> Dma2d<'d, T> {
@@ -748,54 +704,113 @@ impl<'d, T: Instance> Dma2d<'d, T> {
     }
 
     /// Transfer blended image
-    pub async fn transfer_blended_image<'a, TSrc1Pixel, TSrc2Pixel, TDstPixel>(
+    pub async fn transfer_blended_image<'a, TSrcFgPixel, TSrcBgPixel, TDstPixel>(
         &mut self,
-        src: BlendSrc<'a, TSrc1Pixel, TSrc2Pixel>,
+        src: BlendSrc<'a, TSrcFgPixel, TSrcBgPixel>,
         dst: DstBuffer<'a, TDstPixel>,
     ) -> Result<(), Error> {
         let dma2d = T::regs();
 
-        let (src_addr, transfer_mode) = match src {
-            BlendSrc::BlendFgFixedColor(color, src_bg) => {
-                dma2d.fgcolr().modify(|w| {
-                    w.set_red(color.red);
-                    w.set_green(color.green);
-                    w.set_blue(color.blue);
-                });
-                (
-                    src_bg.addr.as_ptr() as u32,
-                    TransferMode::MemoryToMemoryPfcBlendingFixedColorFg,
-                )
-            }
-            BlendSrc::BlendBgFixedColor(src_fg, color) => {
-                dma2d.bgcolr().modify(|w| {
-                    w.set_red(color.red);
-                    w.set_green(color.green);
-                    w.set_blue(color.blue);
-                });
+        if let Some((transfer_mode, output_offset)) = match src {
+            BlendSrc::BlendFgFixedColorBgImg(color, src_bg) => {
+                if let Some(offsets) =
+                    calculate_offsets(src_bg.x, src_bg.y, src_bg.width, src_bg.height, dst.width, dst.height)
+                {
+                    dma2d.fgcolr().modify(|w| {
+                        w.set_red(color.red);
+                        w.set_green(color.green);
+                        w.set_blue(color.blue);
+                    });
+                    let bg_layer = LayerConfig {
+                        color_mode: LayerColorMode::Background(src_bg.color_mode),
+                        line_offset: offsets.src.line_offset,
+                        ..Default::default()
+                    };
+                    self.configure_layer(bg_layer);
 
-                (
-                    src_fg.addr.as_ptr() as u32,
-                    TransferMode::MemoryToMemoryPfcBlendingFixedColorBg,
-                )
-            }
-            BlendSrc::BlendFgBg(src_fg, src_bg) => {
-                dma2d.bgmar().modify(|w| w.set_ma(src_bg.addr.as_ptr() as u32));
-                (src_fg.addr.as_ptr() as u32, TransferMode::MemoryToMemoryPfcBlending)
-            }
-        };
+                    let src_addr = &src_bg.addr[offsets.src.start_offset..];
+                    let dst_addr = &dst.addr[offsets.dst.start_offset..];
 
-        let config = Dma2dConfiguration {
-            color_mode: dst.color_mode,
-            transfer_mode,
-            line_offset_mode: LineOffsetMode::Pixels,
-            ..Default::default()
-        };
-        self.init(config);
+                    dma2d.bgmar().modify(|x| x.set_ma(src_addr.as_ptr() as u32));
+                    self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
+                    Some((
+                        TransferMode::MemoryToMemoryPfcBlendingFixedColorFg,
+                        offsets.dst.line_offset,
+                    ))
+                } else {
+                    None
+                }
+            }
+            BlendSrc::BlendFgImgBgFixedColor(src_fg, color) => {
+                if let Some(offsets) =
+                    calculate_offsets(src_fg.x, src_fg.y, src_fg.width, src_fg.height, dst.width, dst.height)
+                {
+                    dma2d.bgcolr().modify(|w| {
+                        w.set_red(color.red);
+                        w.set_green(color.green);
+                        w.set_blue(color.blue);
+                    });
 
-        let src_data = SourceData::SrcAddress(src_addr);
-        let dst_addr = dst.addr.as_ptr() as u32;
-        self.transfer(src_data, dst_addr, 0, 0).await?;
+                    let layer_config = LayerConfig {
+                        color_mode: LayerColorMode::Foreground(src_fg.color_mode),
+                        line_offset: offsets.src.line_offset,
+                        ..Default::default()
+                    };
+                    self.configure_layer(layer_config);
+
+                    let src_addr = &src_fg.addr[offsets.src.start_offset..];
+                    let dst_addr = &dst.addr[offsets.dst.start_offset..];
+
+                    dma2d.fgmar().modify(|w| w.set_ma(src_addr.as_ptr() as u32));
+                    self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
+                    Some((
+                        TransferMode::MemoryToMemoryPfcBlendingFixedColorBg,
+                        offsets.dst.line_offset,
+                    ))
+                } else {
+                    None
+                }
+            }
+            BlendSrc::BlendFgImgBgImg(src_fg, src_bg) => {
+                if let Some(offsets) = calculate_offsets_multi(&src_fg, &src_bg, &dst) {
+                    let fg_layer = LayerConfig {
+                        color_mode: LayerColorMode::Foreground(src_fg.color_mode),
+                        line_offset: offsets.fg.line_offset,
+                        ..Default::default()
+                    };
+                    self.configure_layer(fg_layer);
+                    let bg_layer = LayerConfig {
+                        color_mode: LayerColorMode::Background(src_bg.color_mode),
+                        line_offset: offsets.bg.line_offset,
+                        ..Default::default()
+                    };
+                    self.configure_layer(bg_layer);
+
+                    let src_fg_addr = &src_fg.addr[offsets.fg.start_offset..];
+                    let src_bg_addr = &src_bg.addr[offsets.bg.start_offset..];
+                    let dst_addr = &dst.addr[offsets.dst.start_offset..];
+
+                    dma2d.fgmar().modify(|w| w.set_ma(src_fg_addr.as_ptr() as u32));
+                    dma2d.bgmar().modify(|w| w.set_ma(src_bg_addr.as_ptr() as u32));
+
+                    self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
+
+                    Some((TransferMode::MemoryToMemoryPfcBlending, offsets.dst.line_offset))
+                } else {
+                    None
+                }
+            }
+        } {
+            let config = Dma2dConfiguration {
+                color_mode: dst.color_mode,
+                transfer_mode,
+                line_offset_mode: LineOffsetMode::Pixels,
+                output_offset,
+                ..Default::default()
+            };
+            self.init(config);
+            self.transfer().await?;
+        }
 
         Ok(())
     }
@@ -803,45 +818,36 @@ impl<'d, T: Instance> Dma2d<'d, T> {
     /// Transfer image
     pub async fn transfer_image<'a, TSrcPixel, TDstPixel>(
         &mut self,
-        src: SrcImage<'a, TSrcPixel>,
+        src: SrcFgImage<'a, TSrcPixel>,
         dst: DstBuffer<'a, TDstPixel>,
     ) -> Result<(), Error> {
-        let bounds = MemToMemPixelOffsets::calculate(src.x, src.y, src.width, src.height, dst.width, dst.height);
+        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
+            let config = Dma2dConfiguration {
+                color_mode: dst.color_mode,
+                transfer_mode: TransferMode::MemoryToMemory,
+                line_offset_mode: LineOffsetMode::Pixels,
+                output_offset: offsets.dst.line_offset,
+                ..Default::default()
+            };
+            self.init(config);
 
-        match bounds {
-            Some(MemToMemPixelOffsets {
-                dst_offset,
-                src_offset,
-                output_offset,
-                line_offset,
-                width,
-                height,
-            }) => {
-                let config = Dma2dConfiguration {
-                    color_mode: dst.color_mode,
-                    transfer_mode: TransferMode::MemoryToMemory,
-                    line_offset_mode: LineOffsetMode::Pixels,
-                    output_offset,
-                    ..Default::default()
-                };
-                self.init(config);
+            let layer_config = LayerConfig {
+                color_mode: LayerColorMode::Foreground(src.color_mode),
+                line_offset: offsets.src.line_offset,
+                ..Default::default()
+            };
+            self.configure_layer(layer_config);
 
-                let layer_config = LayerConfig {
-                    color_mode: LayerColorMode::Foreground(src.color_mode),
-                    line_offset,
-                    ..Default::default()
-                };
-                self.configure_layer(layer_config);
+            let src_addr = &src.addr[offsets.src.start_offset..];
+            let dst_addr = &dst.addr[offsets.dst.start_offset..];
 
-                let src_addr = &src.addr[src_offset as usize..];
-                let dst_addr = &dst.addr[dst_offset as usize..];
-
-                //dma2d.transfer(src_addr, dst_addr, width, height).await
-                let src_data = SourceData::SrcAddress(src_addr.as_ptr() as u32);
-                self.transfer(src_data, dst_addr.as_ptr() as u32, width, height).await
-            }
-            None => Ok(()),
+            let dma2d = T::regs();
+            dma2d.fgmar().modify(|w| w.set_ma(src_addr.as_ptr() as u32));
+            self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
+            self.transfer().await?;
         }
+
+        Ok(())
     }
 
     /// Fill rectangle with given color
@@ -856,50 +862,55 @@ impl<'d, T: Instance> Dma2d<'d, T> {
             ));
         }
 
-        let bounds = RegToMemPixelOffsets::calculate(src.x, src.y, src.width, src.height, dst.width, dst.height);
+        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
+            let (color_mode, size) = match &src.color {
+                OutputColor::Argb1555(_) => (ColorMode::Argb1555, size_of::<OcArgb1555>()),
+                OutputColor::Argb4444(_) => (ColorMode::Argb4444, size_of::<OcArgb4444>()),
+                OutputColor::Argb8888(_) => (ColorMode::Argb8888, size_of::<OcArgb8888>()),
+                OutputColor::Rgb565(_) => (ColorMode::Rgb565, size_of::<OcRgb565>()),
+                OutputColor::Rgb888(_) => (ColorMode::Rgb888, size_of::<OcRgb888>()),
+            };
 
-        match bounds {
-            Some(RegToMemPixelOffsets {
-                output_offset,
-                dst_offset,
-                width,
-                height,
-            }) => {
-                let (color_mode, size) = match &src.color {
-                    OutputColor::Argb1555(_) => (ColorMode::Argb1555, size_of::<OcArgb1555>()),
-                    OutputColor::Argb4444(_) => (ColorMode::Argb4444, size_of::<OcArgb4444>()),
-                    OutputColor::Argb8888(_) => (ColorMode::Argb8888, size_of::<OcArgb8888>()),
-                    OutputColor::Rgb565(_) => (ColorMode::Rgb565, size_of::<OcRgb565>()),
-                    OutputColor::Rgb888(_) => (ColorMode::Rgb888, size_of::<OcRgb888>()),
-                };
-
-                if color_mode != dst.color_mode {
-                    return Err(Error::OutputColorTypeMismatch(
-                        "rect color does not match dst color mode",
-                    ));
-                }
-
-                if size != size_of::<TDstPixel>() {
-                    return Err(Error::OutputColorTypeMismatch(
-                        "rect color does not match output pixel size",
-                    ));
-                }
-
-                let config = Dma2dConfiguration {
-                    color_mode,
-                    transfer_mode: TransferMode::RegisterToMemory,
-                    line_offset_mode: LineOffsetMode::Pixels,
-                    output_offset,
-                    ..Default::default()
-                };
-                self.init(config);
-
-                let dst_addr = (&dst.addr[dst_offset as usize..]).as_ptr() as u32;
-                let src_data = SourceData::OutputColor(src.color);
-                self.transfer(src_data, dst_addr, width, height).await
+            if color_mode != dst.color_mode {
+                return Err(Error::OutputColorTypeMismatch(
+                    "rect color does not match dst color mode",
+                ));
             }
-            None => Ok(()),
+
+            if size != size_of::<TDstPixel>() {
+                return Err(Error::OutputColorTypeMismatch(
+                    "rect color does not match output pixel size",
+                ));
+            }
+
+            let config = Dma2dConfiguration {
+                color_mode,
+                transfer_mode: TransferMode::RegisterToMemory,
+                line_offset_mode: LineOffsetMode::Pixels,
+                output_offset: offsets.dst.line_offset,
+                ..Default::default()
+            };
+            self.init(config);
+
+            let dst_addr = (&dst.addr[offsets.dst.start_offset..]).as_ptr() as u32;
+
+            let dma2d = T::regs();
+            dma2d.ocolr().modify(|w| {
+                let val = match src.color {
+                    OutputColor::Argb1555(x) => x.0 as u32,
+                    OutputColor::Argb4444(x) => x.0 as u32,
+                    OutputColor::Argb8888(x) => x.0,
+                    OutputColor::Rgb565(x) => x.0 as u32,
+                    OutputColor::Rgb888(x) => x.0 as u32,
+                };
+                w.set_color(val)
+            });
+
+            self.setup_output(dst_addr, offsets.width, offsets.height);
+            self.transfer().await?;
         }
+
+        Ok(())
     }
 
     /// Initialise and enable the peripheral
@@ -953,10 +964,8 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         self.config = Some(config);
     }
 
-    fn set_config(&self, src: SourceData, dst_addr: u32, width: u16, height: u16) -> Result<(), Error> {
+    fn setup_output(&self, dst_addr: u32, width: u16, height: u16) {
         let dma2d = T::regs();
-
-        let config = self.config.as_ref().expect("init has not yet been called");
 
         // set width and height
         dma2d.nlr().modify(|w| {
@@ -966,41 +975,6 @@ impl<'d, T: Instance> Dma2d<'d, T> {
 
         // set destination address
         dma2d.omar().modify(|w| w.set_ma(dst_addr));
-
-        // set source address
-        match config.transfer_mode {
-            TransferMode::RegisterToMemory => dma2d.ocolr().modify(|w| match src {
-                SourceData::OutputColor(color) => {
-                    let val = match color {
-                        OutputColor::Argb1555(x) => x.0 as u32,
-                        OutputColor::Argb4444(x) => x.0 as u32,
-                        OutputColor::Argb8888(x) => x.0,
-                        OutputColor::Rgb565(x) => x.0 as u32,
-                        OutputColor::Rgb888(x) => x.0 as u32,
-                    };
-                    w.set_color(val);
-                    Ok(())
-                }
-                _ => Err(Error::InvalidSourceData("expected output color")),
-            }),
-            TransferMode::MemoryToMemoryPfcBlendingFixedColorFg => match src {
-                SourceData::SrcAddress(src_addr) => {
-                    dma2d.bgmar().modify(|x| x.set_ma(src_addr));
-                    Ok(())
-                }
-                _ => Err(Error::InvalidSourceData("expected src address for background buffer")),
-            },
-            TransferMode::MemoryToMemory
-            | TransferMode::MemoryToMemoryPfc
-            | TransferMode::MemoryToMemoryPfcBlending
-            | TransferMode::MemoryToMemoryPfcBlendingFixedColorBg => match src {
-                SourceData::SrcAddress(src_addr) => {
-                    dma2d.fgmar().modify(|w| w.set_ma(src_addr));
-                    Ok(())
-                }
-                _ => Err(Error::InvalidSourceData("expected src address for foreground buffer")),
-            },
-        }
     }
 
     /// Configure forground or background layers
@@ -1081,44 +1055,11 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         }
     }
 
-    /*
-    /// Transfer blocking
-    pub fn transfer_blocking<TPixelSize>(
-        &self,
-        src_data: SourceData,
-        dest_addr: &'static [TPixelSize],
-        width: u16,
-        height: u16,
-    ) -> Result<(), Error> {
-        Self::clear_interrupt_flags(); // don't poison the request with old flags
-        self.set_config(src_data, dest_addr, width, height)?;
-        let dma2d = T::regs();
-        dma2d.cr().modify(|w| w.set_start(CrStart::START));
-        loop {
-            let status = dma2d.isr().read();
-
-            if status.caeif() {
-                return Err(Error::ClutAccessError);
-            } else if status.ceif() {
-                return Err(Error::ConfigurationError);
-            } else if status.ctcif() {
-                return Err(Error::Unexpected("CLUT transfer complete"));
-            } else if status.tcif() {
-                return Ok(());
-            } else if status.teif() {
-                return Err(Error::TransferError);
-            } else if status.twif() {
-                return Err(Error::Unexpected("Transfer watermark"));
-            }
-        }
-    }*/
-
     /// Start a dma2d transfer
     /// This is the async equivalent of calling start_transfer followed by repeatedly calling poll_transfer until completion
     /// The benefit of this function is that you don't have to hold up the cpu while waiting for completion
-    async fn transfer(&self, src_data: SourceData, dst_addr: u32, width: u16, height: u16) -> Result<(), Error> {
+    async fn transfer(&self) -> Result<(), Error> {
         let mut status = T::regs().isr().read();
-        self.set_config(src_data, dst_addr, width, height)?;
 
         // if all interrupt flags are clear
         if !status.caeif() && !status.ceif() && !status.ctcif() && !status.tcif() && !status.teif() && !status.twif() {
@@ -1136,6 +1077,8 @@ impl<'d, T: Instance> Dma2d<'d, T> {
 
                 Self::clear_interrupt_flags(); // don't poison the request with old flags
                 Self::enable_interrupts(true);
+
+                // start the transfer
                 dma2d.cr().modify(|w| w.set_start(CrStart::START));
 
                 // need to check condition after register to avoid a race
