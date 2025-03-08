@@ -64,193 +64,6 @@ pub struct OcArgb1555(pub u16);
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OcArgb8888(pub u32);
 
-impl OcArgb1555 {
-    /// Valid values: alpha (0 or 1 - transparent or opaque) red (0-31) green (0-31) blue (0-31)
-    pub const fn new(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
-        const A_BITS: usize = 1;
-        const R_BITS: usize = 4;
-        const G_BITS: usize = 4;
-        const B_BITS: usize = 4;
-        let a_shifted = shift_u16(alpha, A_BITS, R_BITS + G_BITS + B_BITS);
-        let r_shifted = shift_u16(red, R_BITS, G_BITS + B_BITS);
-        let g_shifted = shift_u16(green, G_BITS, B_BITS);
-        let b_shifted = shift_u16(blue, B_BITS, 0);
-        Self(a_shifted | r_shifted | g_shifted | b_shifted)
-    }
-}
-
-impl OcArgb4444 {
-    /// Valid values: alpha (0-15 transparent-opaque) red (0-15) green (0-15) blue (0-15)
-    pub const fn new(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
-        const A_BITS: usize = 4;
-        const R_BITS: usize = 4;
-        const G_BITS: usize = 4;
-        const B_BITS: usize = 4;
-        let a_shifted = shift_u16(alpha, A_BITS, R_BITS + G_BITS + B_BITS);
-        let r_shifted = shift_u16(red, R_BITS, G_BITS + B_BITS);
-        let g_shifted = shift_u16(green, G_BITS, B_BITS);
-        let b_shifted = shift_u16(blue, B_BITS, 0);
-        Self(a_shifted | r_shifted | g_shifted | b_shifted)
-    }
-}
-
-impl OcArgb8888 {
-    /// Valid values: alpha (0-255 transparent-opaque) red (0-255) green (0-255) blue (0-255)
-    pub const fn new(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
-        const A_BITS: usize = 8;
-        const R_BITS: usize = 8;
-        const G_BITS: usize = 8;
-        const B_BITS: usize = 8;
-        let a_shifted = shift_u32(alpha, A_BITS, R_BITS + G_BITS + B_BITS);
-        let r_shifted = shift_u32(red, R_BITS, G_BITS + B_BITS);
-        let g_shifted = shift_u32(green, G_BITS, B_BITS);
-        let b_shifted = shift_u32(blue, B_BITS, 0);
-        Self(a_shifted | r_shifted | g_shifted | b_shifted)
-    }
-}
-
-impl OcRgb888 {
-    /// Valid values: red (0-255) green (0-255) blue (0-255)
-    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
-        const R_BITS: usize = 8;
-        const G_BITS: usize = 8;
-        const B_BITS: usize = 8;
-        let r_shifted = shift_u32(red, R_BITS, G_BITS + B_BITS);
-        let g_shifted = shift_u32(green, G_BITS, B_BITS);
-        let b_shifted = shift_u32(blue, B_BITS, 0);
-        Self(r_shifted | g_shifted | b_shifted)
-    }
-}
-
-impl OcRgb565 {
-    /// Valid values: red (0-31) green (0-63) blue (0-31)
-    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
-        const R_BITS: usize = 5;
-        const G_BITS: usize = 6;
-        const B_BITS: usize = 5;
-        let r_shifted = shift_u16(red, R_BITS, G_BITS + B_BITS);
-        let g_shifted = shift_u16(green, G_BITS, B_BITS);
-        let b_shifted = shift_u16(blue, B_BITS, 0);
-        Self(r_shifted | g_shifted | b_shifted)
-    }
-}
-
-const fn shift_u16(value: u8, num_bits: usize, shift_by: usize) -> u16 {
-    let max = ((1usize << num_bits) - 1) as u8;
-    ((value & max) as u16) << shift_by
-}
-
-const fn shift_u32(value: u8, num_bits: usize, shift_by: usize) -> u32 {
-    let max = ((1usize << num_bits) - 1) as u8;
-    ((value & max) as u32) << shift_by
-}
-
-#[derive(Debug)]
-struct ImgOffsets {
-    pub line_offset: u16,
-    pub start_offset: usize,
-}
-
-impl ImgOffsets {
-    pub fn new(line_offset: u16, start_offset: usize) -> Self {
-        Self {
-            line_offset,
-            start_offset,
-        }
-    }
-}
-
-struct Offsets {
-    pub src: ImgOffsets,
-    pub dst: ImgOffsets,
-    pub width: u16,
-    pub height: u16,
-}
-
-fn calculate_offsets(
-    src_x: i32,
-    src_y: i32,
-    src_width: u16,
-    src_height: u16,
-    dst_width: u16,
-    dst_height: u16,
-) -> Option<Offsets> {
-    let x0 = src_x.max(0);
-    let x1 = (src_x + src_width as i32).min(dst_width as i32);
-    let y0 = src_y.max(0);
-    let y1 = (src_y + src_height as i32).min(dst_height as i32);
-
-    let width = x1 - x0;
-    let height = y1 - y0;
-
-    if width < 0 || height < 0 {
-        // out of bounds
-        None
-    } else {
-        let src1_offsets = ImgOffsets::new(
-            src_width - width as u16,
-            ((x0 - src_x) + (y0 - src_y) * src_width as i32) as usize,
-        );
-        let dst_offsets = ImgOffsets::new(dst_width - width as u16, (x0 + y0 * dst_width as i32) as usize);
-        let offsets = Offsets {
-            src: src1_offsets,
-            dst: dst_offsets,
-            width: width as u16,
-            height: height as u16,
-        };
-        Some(offsets)
-    }
-}
-
-struct OffsetsMulti {
-    pub fg: ImgOffsets,
-    pub bg: ImgOffsets,
-    pub dst: ImgOffsets,
-    pub width: u16,
-    pub height: u16,
-}
-
-fn calculate_offsets_multi<T0, T1, T2>(
-    src1: &SrcFgImage<'_, T0>,
-    scr2: &SrcBgImage<'_, T1>,
-    dst: &DstBuffer<'_, T2>,
-) -> Option<OffsetsMulti> {
-    let x0 = src1.x.max(scr2.x).max(0);
-    let x1 = (src1.x + src1.width as i32)
-        .min(scr2.x + scr2.width as i32)
-        .min(dst.width as i32);
-    let y0 = src1.y.max(scr2.y).max(0);
-    let y1 = (src1.y + src1.height as i32)
-        .min(scr2.y + scr2.height as i32)
-        .min(dst.height as i32);
-
-    let width = x1 - x0;
-    let height = y1 - y0;
-
-    if width < 0 || height < 0 {
-        // out of bounds
-        None
-    } else {
-        let src1_offsets = ImgOffsets::new(
-            src1.width as u16 - width as u16,
-            ((x0 - src1.x) + (y0 - src1.y) * src1.width as i32) as usize,
-        );
-        let src2_offsets = ImgOffsets::new(
-            scr2.width as u16 - width as u16,
-            ((x0 - scr2.x) + (y0 - scr2.y) * scr2.width as i32) as usize,
-        );
-        let dst_offsets = ImgOffsets::new(dst.width as u16 - width as u16, (x0 + y0 * dst.width as i32) as usize);
-        let offsets = OffsetsMulti {
-            fg: src1_offsets,
-            bg: src2_offsets,
-            dst: dst_offsets,
-            width: width as u16,
-            height: height as u16,
-        };
-        Some(offsets)
-    }
-}
-
 /// Source image configuration
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -296,59 +109,6 @@ impl Default for DstImgConfig {
             bytes_swap: BytesSwap::Regular,
         }
     }
-}
-
-/// Display configuration parameters
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-struct Dma2dConfiguration {
-    /// Transfer mode
-    pub transfer_mode: TransferMode,
-    /// Color format of the output image
-    pub color_mode: OutputColorMode,
-    /// Offset value between 0x0000 and 0x3FFF. This value is used for the address generation. It is added at the end of each line to determine the starting address of the next line.
-    pub output_offset: u16,
-    /// Regular or inverted alpha value for the output pixel format converter
-    pub alpha_inverted: AlphaInversion,
-    /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
-    pub red_blue_swap: RedBlueSwap,
-    /// Byte regular mode or bytes swap mode (two by two)
-    pub bytes_swap: BytesSwap,
-    /// Line offset for the foreground, background and output_offset
-    pub line_offset_mode: LineOffsetMode,
-}
-
-impl Default for Dma2dConfiguration {
-    fn default() -> Self {
-        Self {
-            transfer_mode: TransferMode::RegisterToMemory,
-            color_mode: OutputColorMode::Argb8888,
-            output_offset: 0,
-            alpha_inverted: AlphaInversion::Regular,
-            red_blue_swap: RedBlueSwap::Regular,
-            bytes_swap: BytesSwap::Regular,
-            line_offset_mode: LineOffsetMode::Pixels,
-        }
-    }
-}
-
-/// Transfer mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-enum TransferMode {
-    /// Memory to memory
-    MemoryToMemory,
-    /// Memory to memory with pixel format conversion (PFC)
-    MemoryToMemoryPfc,
-    /// Memory to memory with pixel format conversion (PFC) and blending
-    MemoryToMemoryPfcBlending,
-    /// Register to memory
-    RegisterToMemory,
-    /// TODO: restrict this to only the stm32 chips that support it (like stm32u5g9)
-    /// Memory to memory with pixel format conversion (PFC), blending and fixed color foreground
-    MemoryToMemoryPfcBlendingFixedColorFg,
-    /// Memory to memory with pixel format conversion (PFC), blending and fixed color backgreound
-    MemoryToMemoryPfcBlendingFixedColorBg,
 }
 
 /// DMA2D error
@@ -479,28 +239,6 @@ pub enum BytesSwap {
     Swap,
 }
 
-/// Line offset mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum LineOffsetMode {
-    /// Line offset expressed in pixels
-    Pixels,
-    /// Line offset expressed in bytes
-    Bytes,
-}
-
-/// Chroma sub-sampling
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ChromaSubSampling {
-    /// No chroma sub-sampling 4:4:4
-    None,
-    /// Chroma sub-sampling 4:2:2
-    _422,
-    /// Chroma sub-sampling 4:2:0
-    _420,
-}
-
 /// Layer config
 pub struct LayerConfig {
     /// Alpha value
@@ -563,20 +301,6 @@ pub struct InterruptHandler<T: Instance> {
 
 impl<'d, T: Instance> Drop for Dma2d<'d, T> {
     fn drop(&mut self) {}
-}
-
-/// Poll result
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum PollResult {
-    /// Pending - Operation is still running
-    Pending,
-    /// Transfer complete
-    TransferComplete,
-    /// CLUT transfer complete
-    ClutTransferComplete,
-    /// Transfer watermark complete
-    TransferWatermark,
 }
 
 trait SealedInstance: crate::rcc::SealedRccPeripheral {
@@ -783,6 +507,125 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         }
     }
 
+    /// Fill rectangle with given color
+    pub async fn transfer_rect<'a, TDstPixel>(
+        &mut self,
+        src: FilledRect,
+        dst: DstBuffer<'a, TDstPixel>,
+    ) -> Result<(), Error> {
+        if dst.addr.len() != (dst.width as usize * dst.height as usize) {
+            return Err(Error::InvalidDestBuffer(
+                "destination buffer length does not match given width and height",
+            ));
+        }
+
+        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
+            let (color_mode, size) = match &src.color {
+                OutputColor::Argb1555(_) => (OutputColorMode::Argb1555, size_of::<OcArgb1555>()),
+                OutputColor::Argb4444(_) => (OutputColorMode::Argb4444, size_of::<OcArgb4444>()),
+                OutputColor::Argb8888(_) => (OutputColorMode::Argb8888, size_of::<OcArgb8888>()),
+                OutputColor::Rgb565(_) => (OutputColorMode::Rgb565, size_of::<OcRgb565>()),
+                OutputColor::Rgb888(_) => (OutputColorMode::Rgb888, size_of::<OcRgb888>()),
+            };
+
+            if color_mode != dst.color_mode {
+                return Err(Error::OutputColorTypeMismatch(
+                    "rect color does not match dst color mode",
+                ));
+            }
+
+            if size != size_of::<TDstPixel>() {
+                return Err(Error::OutputColorTypeMismatch(
+                    "rect color does not match output pixel size",
+                ));
+            }
+
+            let config = Dma2dConfiguration {
+                transfer_mode: TransferMode::RegisterToMemory,
+                line_offset_mode: LineOffsetMode::Pixels,
+                output_offset: offsets.dst.line_offset,
+                color_mode: dst.color_mode,
+                alpha_inverted: dst.config.alpha_inverted,
+                bytes_swap: dst.config.bytes_swap,
+                red_blue_swap: dst.config.red_blue_swap,
+            };
+            self.init(config);
+
+            let dst_addr = (&dst.addr[offsets.dst.start_offset..]).as_ptr() as u32;
+
+            let dma2d = T::regs();
+            dma2d.ocolr().modify(|w| {
+                let val = match src.color {
+                    OutputColor::Argb1555(x) => x.0 as u32,
+                    OutputColor::Argb4444(x) => x.0 as u32,
+                    OutputColor::Argb8888(x) => x.0,
+                    OutputColor::Rgb565(x) => x.0 as u32,
+                    OutputColor::Rgb888(x) => x.0 as u32,
+                };
+                w.set_color(val)
+            });
+
+            self.setup_output(dst_addr, offsets.width, offsets.height);
+            self.transfer().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Transfer image
+    pub async fn transfer_image<'a, TSrcPixel, TDstPixel>(
+        &mut self,
+        src: SrcFgImage<'a, TSrcPixel>,
+        dst: DstBuffer<'a, TDstPixel>,
+        enable_pixel_format_conversion: bool,
+    ) -> Result<(), Error> {
+        if src.addr.len() != (src.width as usize * src.height as usize) {
+            return Err(Error::InvalidSourceData(
+                "source buffer length does not match given width and height",
+            ));
+
+            // NOTE: we could also check that the user passed the correct pixel data type but this has not yet been implemented
+        }
+
+        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
+            let transfer_mode = if enable_pixel_format_conversion {
+                TransferMode::MemoryToMemoryPfc
+            } else {
+                TransferMode::MemoryToMemory
+            };
+            let config = Dma2dConfiguration {
+                output_offset: offsets.dst.line_offset,
+                transfer_mode,
+                line_offset_mode: LineOffsetMode::Pixels,
+                color_mode: dst.color_mode,
+                alpha_inverted: dst.config.alpha_inverted,
+                bytes_swap: dst.config.bytes_swap,
+                red_blue_swap: dst.config.red_blue_swap,
+            };
+            self.init(config);
+
+            let layer_config = LayerConfig {
+                color_mode: LayerColorMode::Foreground(src.color_mode),
+                line_offset: offsets.src.line_offset,
+                alpha_inversion: src.config.alpha_inversion,
+                alpha_mode: src.config.alpha_mode,
+                alpha: src.config.alpha,
+                red_blue_swap: src.config.red_blue_swap,
+            };
+            self.configure_layer(layer_config);
+
+            let src_addr = &src.addr[offsets.src.start_offset..];
+            let dst_addr = &dst.addr[offsets.dst.start_offset..];
+
+            let dma2d = T::regs();
+            dma2d.fgmar().modify(|w| w.set_ma(src_addr.as_ptr() as u32));
+            self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
+            self.transfer().await?;
+        }
+
+        Ok(())
+    }
+
     /// Transfer blended image
     pub async fn transfer_blended_image<'a, TSrcFgPixel, TSrcBgPixel, TDstPixel>(
         &mut self,
@@ -897,125 +740,6 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         Ok(())
     }
 
-    /// Transfer image
-    pub async fn transfer_image<'a, TSrcPixel, TDstPixel>(
-        &mut self,
-        src: SrcFgImage<'a, TSrcPixel>,
-        dst: DstBuffer<'a, TDstPixel>,
-        enable_pixel_format_conversion: bool,
-    ) -> Result<(), Error> {
-        if src.addr.len() != (src.width as usize * src.height as usize) {
-            return Err(Error::InvalidSourceData(
-                "source buffer length does not match given width and height",
-            ));
-
-            // NOTE: we could also check that the user passed the correct pixel data type but this has not yet been implemented
-        }
-
-        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
-            let transfer_mode = if enable_pixel_format_conversion {
-                TransferMode::MemoryToMemoryPfc
-            } else {
-                TransferMode::MemoryToMemory
-            };
-            let config = Dma2dConfiguration {
-                output_offset: offsets.dst.line_offset,
-                transfer_mode,
-                line_offset_mode: LineOffsetMode::Pixels,
-                color_mode: dst.color_mode,
-                alpha_inverted: dst.config.alpha_inverted,
-                bytes_swap: dst.config.bytes_swap,
-                red_blue_swap: dst.config.red_blue_swap,
-            };
-            self.init(config);
-
-            let layer_config = LayerConfig {
-                color_mode: LayerColorMode::Foreground(src.color_mode),
-                line_offset: offsets.src.line_offset,
-                alpha_inversion: src.config.alpha_inversion,
-                alpha_mode: src.config.alpha_mode,
-                alpha: src.config.alpha,
-                red_blue_swap: src.config.red_blue_swap,
-            };
-            self.configure_layer(layer_config);
-
-            let src_addr = &src.addr[offsets.src.start_offset..];
-            let dst_addr = &dst.addr[offsets.dst.start_offset..];
-
-            let dma2d = T::regs();
-            dma2d.fgmar().modify(|w| w.set_ma(src_addr.as_ptr() as u32));
-            self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
-            self.transfer().await?;
-        }
-
-        Ok(())
-    }
-
-    /// Fill rectangle with given color
-    pub async fn transfer_filled_rect<'a, TDstPixel>(
-        &mut self,
-        src: FilledRect,
-        dst: DstBuffer<'a, TDstPixel>,
-    ) -> Result<(), Error> {
-        if dst.addr.len() != (dst.width as usize * dst.height as usize) {
-            return Err(Error::InvalidDestBuffer(
-                "destination buffer length does not match given width and height",
-            ));
-        }
-
-        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
-            let (color_mode, size) = match &src.color {
-                OutputColor::Argb1555(_) => (OutputColorMode::Argb1555, size_of::<OcArgb1555>()),
-                OutputColor::Argb4444(_) => (OutputColorMode::Argb4444, size_of::<OcArgb4444>()),
-                OutputColor::Argb8888(_) => (OutputColorMode::Argb8888, size_of::<OcArgb8888>()),
-                OutputColor::Rgb565(_) => (OutputColorMode::Rgb565, size_of::<OcRgb565>()),
-                OutputColor::Rgb888(_) => (OutputColorMode::Rgb888, size_of::<OcRgb888>()),
-            };
-
-            if color_mode != dst.color_mode {
-                return Err(Error::OutputColorTypeMismatch(
-                    "rect color does not match dst color mode",
-                ));
-            }
-
-            if size != size_of::<TDstPixel>() {
-                return Err(Error::OutputColorTypeMismatch(
-                    "rect color does not match output pixel size",
-                ));
-            }
-
-            let config = Dma2dConfiguration {
-                transfer_mode: TransferMode::RegisterToMemory,
-                line_offset_mode: LineOffsetMode::Pixels,
-                output_offset: offsets.dst.line_offset,
-                color_mode: dst.color_mode,
-                alpha_inverted: dst.config.alpha_inverted,
-                bytes_swap: dst.config.bytes_swap,
-                red_blue_swap: dst.config.red_blue_swap,
-            };
-            self.init(config);
-
-            let dst_addr = (&dst.addr[offsets.dst.start_offset..]).as_ptr() as u32;
-
-            let dma2d = T::regs();
-            dma2d.ocolr().modify(|w| {
-                let val = match src.color {
-                    OutputColor::Argb1555(x) => x.0 as u32,
-                    OutputColor::Argb4444(x) => x.0 as u32,
-                    OutputColor::Argb8888(x) => x.0,
-                    OutputColor::Rgb565(x) => x.0 as u32,
-                    OutputColor::Rgb888(x) => x.0 as u32,
-                };
-                w.set_color(val)
-            });
-
-            self.setup_output(dst_addr, offsets.width, offsets.height);
-            self.transfer().await?;
-        }
-
-        Ok(())
-    }
-
     /// Initialise and enable the peripheral
     fn init(&mut self, config: Dma2dConfiguration) {
         let dma2d = T::regs();
@@ -1035,7 +759,7 @@ impl<'d, T: Instance> Dma2d<'d, T> {
                 }
             });
             w.set_lom(match config.line_offset_mode {
-                LineOffsetMode::Bytes => Lom::BYTES,
+                LineOffsetMode::_Bytes => Lom::BYTES,
                 LineOffsetMode::Pixels => Lom::PIXELS,
             });
         });
@@ -1272,3 +996,265 @@ foreach_interrupt!(
         }
     };
 );
+
+#[derive(Debug)]
+struct ImgOffsets {
+    pub line_offset: u16,
+    pub start_offset: usize,
+}
+
+impl ImgOffsets {
+    pub fn new(line_offset: u16, start_offset: usize) -> Self {
+        Self {
+            line_offset,
+            start_offset,
+        }
+    }
+}
+
+struct Offsets {
+    pub src: ImgOffsets,
+    pub dst: ImgOffsets,
+    pub width: u16,
+    pub height: u16,
+}
+
+fn calculate_offsets(
+    src_x: i32,
+    src_y: i32,
+    src_width: u16,
+    src_height: u16,
+    dst_width: u16,
+    dst_height: u16,
+) -> Option<Offsets> {
+    let x0 = src_x.max(0);
+    let x1 = (src_x + src_width as i32).min(dst_width as i32);
+    let y0 = src_y.max(0);
+    let y1 = (src_y + src_height as i32).min(dst_height as i32);
+
+    let width = x1 - x0;
+    let height = y1 - y0;
+
+    if width < 0 || height < 0 {
+        // out of bounds
+        None
+    } else {
+        let src1_offsets = ImgOffsets::new(
+            src_width - width as u16,
+            ((x0 - src_x) + (y0 - src_y) * src_width as i32) as usize,
+        );
+        let dst_offsets = ImgOffsets::new(dst_width - width as u16, (x0 + y0 * dst_width as i32) as usize);
+        let offsets = Offsets {
+            src: src1_offsets,
+            dst: dst_offsets,
+            width: width as u16,
+            height: height as u16,
+        };
+        Some(offsets)
+    }
+}
+
+struct OffsetsMulti {
+    pub fg: ImgOffsets,
+    pub bg: ImgOffsets,
+    pub dst: ImgOffsets,
+    pub width: u16,
+    pub height: u16,
+}
+
+fn calculate_offsets_multi<T0, T1, T2>(
+    src1: &SrcFgImage<'_, T0>,
+    scr2: &SrcBgImage<'_, T1>,
+    dst: &DstBuffer<'_, T2>,
+) -> Option<OffsetsMulti> {
+    let x0 = src1.x.max(scr2.x).max(0);
+    let x1 = (src1.x + src1.width as i32)
+        .min(scr2.x + scr2.width as i32)
+        .min(dst.width as i32);
+    let y0 = src1.y.max(scr2.y).max(0);
+    let y1 = (src1.y + src1.height as i32)
+        .min(scr2.y + scr2.height as i32)
+        .min(dst.height as i32);
+
+    let width = x1 - x0;
+    let height = y1 - y0;
+
+    if width < 0 || height < 0 {
+        // out of bounds
+        None
+    } else {
+        let src1_offsets = ImgOffsets::new(
+            src1.width as u16 - width as u16,
+            ((x0 - src1.x) + (y0 - src1.y) * src1.width as i32) as usize,
+        );
+        let src2_offsets = ImgOffsets::new(
+            scr2.width as u16 - width as u16,
+            ((x0 - scr2.x) + (y0 - scr2.y) * scr2.width as i32) as usize,
+        );
+        let dst_offsets = ImgOffsets::new(dst.width as u16 - width as u16, (x0 + y0 * dst.width as i32) as usize);
+        let offsets = OffsetsMulti {
+            fg: src1_offsets,
+            bg: src2_offsets,
+            dst: dst_offsets,
+            width: width as u16,
+            height: height as u16,
+        };
+        Some(offsets)
+    }
+}
+
+impl OcArgb1555 {
+    /// Valid values: alpha (0 or 1 - transparent or opaque) red (0-31) green (0-31) blue (0-31)
+    pub const fn new(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
+        const A_BITS: usize = 1;
+        const R_BITS: usize = 4;
+        const G_BITS: usize = 4;
+        const B_BITS: usize = 4;
+        let a_shifted = shift_u16(alpha, A_BITS, R_BITS + G_BITS + B_BITS);
+        let r_shifted = shift_u16(red, R_BITS, G_BITS + B_BITS);
+        let g_shifted = shift_u16(green, G_BITS, B_BITS);
+        let b_shifted = shift_u16(blue, B_BITS, 0);
+        Self(a_shifted | r_shifted | g_shifted | b_shifted)
+    }
+}
+
+impl OcArgb4444 {
+    /// Valid values: alpha (0-15 transparent-opaque) red (0-15) green (0-15) blue (0-15)
+    pub const fn new(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
+        const A_BITS: usize = 4;
+        const R_BITS: usize = 4;
+        const G_BITS: usize = 4;
+        const B_BITS: usize = 4;
+        let a_shifted = shift_u16(alpha, A_BITS, R_BITS + G_BITS + B_BITS);
+        let r_shifted = shift_u16(red, R_BITS, G_BITS + B_BITS);
+        let g_shifted = shift_u16(green, G_BITS, B_BITS);
+        let b_shifted = shift_u16(blue, B_BITS, 0);
+        Self(a_shifted | r_shifted | g_shifted | b_shifted)
+    }
+}
+
+impl OcArgb8888 {
+    /// Valid values: alpha (0-255 transparent-opaque) red (0-255) green (0-255) blue (0-255)
+    pub const fn new(alpha: u8, red: u8, green: u8, blue: u8) -> Self {
+        const A_BITS: usize = 8;
+        const R_BITS: usize = 8;
+        const G_BITS: usize = 8;
+        const B_BITS: usize = 8;
+        let a_shifted = shift_u32(alpha, A_BITS, R_BITS + G_BITS + B_BITS);
+        let r_shifted = shift_u32(red, R_BITS, G_BITS + B_BITS);
+        let g_shifted = shift_u32(green, G_BITS, B_BITS);
+        let b_shifted = shift_u32(blue, B_BITS, 0);
+        Self(a_shifted | r_shifted | g_shifted | b_shifted)
+    }
+}
+
+impl OcRgb888 {
+    /// Valid values: red (0-255) green (0-255) blue (0-255)
+    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
+        const R_BITS: usize = 8;
+        const G_BITS: usize = 8;
+        const B_BITS: usize = 8;
+        let r_shifted = shift_u32(red, R_BITS, G_BITS + B_BITS);
+        let g_shifted = shift_u32(green, G_BITS, B_BITS);
+        let b_shifted = shift_u32(blue, B_BITS, 0);
+        Self(r_shifted | g_shifted | b_shifted)
+    }
+}
+
+impl OcRgb565 {
+    /// Valid values: red (0-31) green (0-63) blue (0-31)
+    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
+        const R_BITS: usize = 5;
+        const G_BITS: usize = 6;
+        const B_BITS: usize = 5;
+        let r_shifted = shift_u16(red, R_BITS, G_BITS + B_BITS);
+        let g_shifted = shift_u16(green, G_BITS, B_BITS);
+        let b_shifted = shift_u16(blue, B_BITS, 0);
+        Self(r_shifted | g_shifted | b_shifted)
+    }
+}
+
+const fn shift_u16(value: u8, num_bits: usize, shift_by: usize) -> u16 {
+    let max = ((1usize << num_bits) - 1) as u8;
+    ((value & max) as u16) << shift_by
+}
+
+const fn shift_u32(value: u8, num_bits: usize, shift_by: usize) -> u32 {
+    let max = ((1usize << num_bits) - 1) as u8;
+    ((value & max) as u32) << shift_by
+}
+
+/// Transfer mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+enum TransferMode {
+    /// Memory to memory
+    MemoryToMemory,
+    /// Memory to memory with pixel format conversion (PFC)
+    MemoryToMemoryPfc,
+    /// Memory to memory with pixel format conversion (PFC) and blending
+    MemoryToMemoryPfcBlending,
+    /// Register to memory
+    RegisterToMemory,
+    /// TODO: restrict this to only the stm32 chips that support it (like stm32u5g9)
+    /// Memory to memory with pixel format conversion (PFC), blending and fixed color foreground
+    MemoryToMemoryPfcBlendingFixedColorFg,
+    /// Memory to memory with pixel format conversion (PFC), blending and fixed color backgreound
+    MemoryToMemoryPfcBlendingFixedColorBg,
+}
+
+/// Display configuration parameters
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+struct Dma2dConfiguration {
+    /// Transfer mode
+    pub transfer_mode: TransferMode,
+    /// Color format of the output image
+    pub color_mode: OutputColorMode,
+    /// Offset value between 0x0000 and 0x3FFF. This value is used for the address generation. It is added at the end of each line to determine the starting address of the next line.
+    pub output_offset: u16,
+    /// Regular or inverted alpha value for the output pixel format converter
+    pub alpha_inverted: AlphaInversion,
+    /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
+    pub red_blue_swap: RedBlueSwap,
+    /// Byte regular mode or bytes swap mode (two by two)
+    pub bytes_swap: BytesSwap,
+    /// Line offset for the foreground, background and output_offset
+    pub line_offset_mode: LineOffsetMode,
+}
+
+impl Default for Dma2dConfiguration {
+    fn default() -> Self {
+        Self {
+            transfer_mode: TransferMode::RegisterToMemory,
+            color_mode: OutputColorMode::Argb8888,
+            output_offset: 0,
+            alpha_inverted: AlphaInversion::Regular,
+            red_blue_swap: RedBlueSwap::Regular,
+            bytes_swap: BytesSwap::Regular,
+            line_offset_mode: LineOffsetMode::Pixels,
+        }
+    }
+}
+
+/// Line offset mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+enum LineOffsetMode {
+    /// Line offset expressed in pixels
+    Pixels,
+    /// Line offset expressed in bytes
+    _Bytes,
+}
+
+/// Chroma sub-sampling
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+enum _ChromaSubSampling {
+    /// No chroma sub-sampling 4:4:4
+    None,
+    /// Chroma sub-sampling 4:2:2
+    _422,
+    /// Chroma sub-sampling 4:2:0
+    _420,
+}
