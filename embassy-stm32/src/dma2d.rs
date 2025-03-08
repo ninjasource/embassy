@@ -904,7 +904,7 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         dst: DstBuffer<'a, TDstPixel>,
         enable_pixel_format_conversion: bool,
     ) -> Result<(), Error> {
-        if src.addr.len() != (dst.width as usize * dst.height as usize) {
+        if src.addr.len() != (src.width as usize * src.height as usize) {
             return Err(Error::InvalidSourceData(
                 "source buffer length does not match given width and height",
             ));
