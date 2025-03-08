@@ -251,6 +251,53 @@ fn calculate_offsets_multi<T0, T1, T2>(
     }
 }
 
+/// Source image configuration
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SrcImgConfig {
+    /// Alpha value (0-255 transparrent-opaque)
+    pub alpha: u8,
+    /// Alpha mode
+    pub alpha_mode: AlphaMode,
+    /// Alpha inversion
+    pub alpha_inversion: AlphaInversion,
+    /// Red blue swap
+    pub red_blue_swap: RedBlueSwap,
+}
+
+impl Default for SrcImgConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0xFF,                     // fully opaque
+            alpha_mode: AlphaMode::NoModify, // alpha not applied
+            alpha_inversion: AlphaInversion::Regular,
+            red_blue_swap: RedBlueSwap::Regular,
+        }
+    }
+}
+
+/// Destination image configuration
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DstImgConfig {
+    /// Regular or inverted alpha value for the output pixel format converter
+    pub alpha_inverted: AlphaInversion,
+    /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
+    pub red_blue_swap: RedBlueSwap,
+    /// Byte regular mode or bytes swap mode (two by two)
+    pub bytes_swap: BytesSwap,
+}
+
+impl Default for DstImgConfig {
+    fn default() -> Self {
+        Self {
+            alpha_inverted: AlphaInversion::Regular,
+            red_blue_swap: RedBlueSwap::Regular,
+            bytes_swap: BytesSwap::Regular,
+        }
+    }
+}
+
 /// Display configuration parameters
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -258,7 +305,7 @@ struct Dma2dConfiguration {
     /// Transfer mode
     pub transfer_mode: TransferMode,
     /// Color format of the output image
-    pub color_mode: ColorMode,
+    pub color_mode: OutputColorMode,
     /// Offset value between 0x0000 and 0x3FFF. This value is used for the address generation. It is added at the end of each line to determine the starting address of the next line.
     pub output_offset: u16,
     /// Regular or inverted alpha value for the output pixel format converter
@@ -275,7 +322,7 @@ impl Default for Dma2dConfiguration {
     fn default() -> Self {
         Self {
             transfer_mode: TransferMode::RegisterToMemory,
-            color_mode: ColorMode::Argb8888,
+            color_mode: OutputColorMode::Argb8888,
             output_offset: 0,
             alpha_inverted: AlphaInversion::Regular,
             red_blue_swap: RedBlueSwap::Regular,
@@ -331,7 +378,7 @@ pub enum Error {
 /// Output color mode
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ColorMode {
+pub enum OutputColorMode {
     /// ARGB8888
     Argb8888,
     /// RBG888
@@ -491,6 +538,8 @@ pub enum LayerColorMode {
     Background(BgColorMode),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// Alpha mode
 pub enum AlphaMode {
     /// No modify
@@ -592,11 +641,21 @@ pub struct SrcFgImage<'a, TSrcPixel> {
     pub height: u16,
     /// color format of the pixels in the buffer
     pub color_mode: FgColorMode,
+    /// config
+    pub config: SrcImgConfig,
 }
 
 impl<'a, TSrcPixel> SrcFgImage<'a, TSrcPixel> {
     /// Creates a new instance of the source
-    pub fn new(addr: &'a [TSrcPixel], x: i32, y: i32, width: u16, height: u16, color_mode: FgColorMode) -> Self {
+    pub fn new(
+        addr: &'a [TSrcPixel],
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        color_mode: FgColorMode,
+        config: SrcImgConfig,
+    ) -> Self {
         Self {
             addr,
             x,
@@ -604,6 +663,7 @@ impl<'a, TSrcPixel> SrcFgImage<'a, TSrcPixel> {
             width,
             height,
             color_mode,
+            config,
         }
     }
 }
@@ -622,11 +682,21 @@ pub struct SrcBgImage<'a, TSrcPixel> {
     pub height: u16,
     /// color format of the pixels in the buffer
     pub color_mode: BgColorMode,
+    /// config
+    pub config: SrcImgConfig,
 }
 
 impl<'a, TSrcPixel> SrcBgImage<'a, TSrcPixel> {
     /// Creates a new instance of the source
-    pub fn new(addr: &'a [TSrcPixel], x: i32, y: i32, width: u16, height: u16, color_mode: BgColorMode) -> Self {
+    pub fn new(
+        addr: &'a [TSrcPixel],
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        color_mode: BgColorMode,
+        config: SrcImgConfig,
+    ) -> Self {
         Self {
             addr,
             x,
@@ -634,6 +704,7 @@ impl<'a, TSrcPixel> SrcBgImage<'a, TSrcPixel> {
             width,
             height,
             color_mode,
+            config,
         }
     }
 }
@@ -646,18 +717,27 @@ pub struct DstBuffer<'a, TPixel> {
     pub width: u16,
     /// height in pixels
     pub height: u16,
-    /// color format of the pixels in the buffer
-    pub color_mode: ColorMode,
+    /// color mode
+    pub color_mode: OutputColorMode,
+    /// extra config
+    pub config: DstImgConfig,
 }
 
 impl<'a, TPixel> DstBuffer<'a, TPixel> {
     /// Creates a new instance of DestBuffer
-    pub fn new(addr: &'a mut [TPixel], width: u16, height: u16, color_mode: ColorMode) -> Self {
+    pub fn new(
+        addr: &'a mut [TPixel],
+        width: u16,
+        height: u16,
+        color_mode: OutputColorMode,
+        config: DstImgConfig,
+    ) -> Self {
         Self {
             addr,
             width,
             height,
             color_mode,
+            config,
         }
     }
 }
@@ -802,11 +882,13 @@ impl<'d, T: Instance> Dma2d<'d, T> {
             }
         } {
             let config = Dma2dConfiguration {
-                color_mode: dst.color_mode,
                 transfer_mode,
                 line_offset_mode: LineOffsetMode::Pixels,
                 output_offset,
-                ..Default::default()
+                color_mode: dst.color_mode,
+                alpha_inverted: dst.config.alpha_inverted,
+                bytes_swap: dst.config.bytes_swap,
+                red_blue_swap: dst.config.red_blue_swap,
             };
             self.init(config);
             self.transfer().await?;
@@ -820,21 +902,40 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         &mut self,
         src: SrcFgImage<'a, TSrcPixel>,
         dst: DstBuffer<'a, TDstPixel>,
+        enable_pixel_format_conversion: bool,
     ) -> Result<(), Error> {
+        if src.addr.len() != (dst.width as usize * dst.height as usize) {
+            return Err(Error::InvalidSourceData(
+                "source buffer length does not match given width and height",
+            ));
+
+            // NOTE: we could also check that the user passed the correct pixel data type but this has not yet been implemented
+        }
+
         if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
+            let transfer_mode = if enable_pixel_format_conversion {
+                TransferMode::MemoryToMemoryPfc
+            } else {
+                TransferMode::MemoryToMemory
+            };
             let config = Dma2dConfiguration {
-                color_mode: dst.color_mode,
-                transfer_mode: TransferMode::MemoryToMemory,
-                line_offset_mode: LineOffsetMode::Pixels,
                 output_offset: offsets.dst.line_offset,
-                ..Default::default()
+                transfer_mode,
+                line_offset_mode: LineOffsetMode::Pixels,
+                color_mode: dst.color_mode,
+                alpha_inverted: dst.config.alpha_inverted,
+                bytes_swap: dst.config.bytes_swap,
+                red_blue_swap: dst.config.red_blue_swap,
             };
             self.init(config);
 
             let layer_config = LayerConfig {
                 color_mode: LayerColorMode::Foreground(src.color_mode),
                 line_offset: offsets.src.line_offset,
-                ..Default::default()
+                alpha_inversion: src.config.alpha_inversion,
+                alpha_mode: src.config.alpha_mode,
+                alpha: src.config.alpha,
+                red_blue_swap: src.config.red_blue_swap,
             };
             self.configure_layer(layer_config);
 
@@ -864,11 +965,11 @@ impl<'d, T: Instance> Dma2d<'d, T> {
 
         if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
             let (color_mode, size) = match &src.color {
-                OutputColor::Argb1555(_) => (ColorMode::Argb1555, size_of::<OcArgb1555>()),
-                OutputColor::Argb4444(_) => (ColorMode::Argb4444, size_of::<OcArgb4444>()),
-                OutputColor::Argb8888(_) => (ColorMode::Argb8888, size_of::<OcArgb8888>()),
-                OutputColor::Rgb565(_) => (ColorMode::Rgb565, size_of::<OcRgb565>()),
-                OutputColor::Rgb888(_) => (ColorMode::Rgb888, size_of::<OcRgb888>()),
+                OutputColor::Argb1555(_) => (OutputColorMode::Argb1555, size_of::<OcArgb1555>()),
+                OutputColor::Argb4444(_) => (OutputColorMode::Argb4444, size_of::<OcArgb4444>()),
+                OutputColor::Argb8888(_) => (OutputColorMode::Argb8888, size_of::<OcArgb8888>()),
+                OutputColor::Rgb565(_) => (OutputColorMode::Rgb565, size_of::<OcRgb565>()),
+                OutputColor::Rgb888(_) => (OutputColorMode::Rgb888, size_of::<OcRgb888>()),
             };
 
             if color_mode != dst.color_mode {
@@ -884,11 +985,13 @@ impl<'d, T: Instance> Dma2d<'d, T> {
             }
 
             let config = Dma2dConfiguration {
-                color_mode,
                 transfer_mode: TransferMode::RegisterToMemory,
                 line_offset_mode: LineOffsetMode::Pixels,
                 output_offset: offsets.dst.line_offset,
-                ..Default::default()
+                color_mode: dst.color_mode,
+                alpha_inverted: dst.config.alpha_inverted,
+                bytes_swap: dst.config.bytes_swap,
+                red_blue_swap: dst.config.red_blue_swap,
             };
             self.init(config);
 
@@ -940,11 +1043,11 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         // configure output pixel format converter
         dma2d.opfccr().modify(|w| {
             w.set_cm(match config.color_mode {
-                ColorMode::Argb8888 => OpfccrCm::ARGB8888,
-                ColorMode::Rgb888 => OpfccrCm::RGB888,
-                ColorMode::Rgb565 => OpfccrCm::RGB565,
-                ColorMode::Argb1555 => OpfccrCm::ARGB1555,
-                ColorMode::Argb4444 => OpfccrCm::ARGB4444,
+                OutputColorMode::Argb8888 => OpfccrCm::ARGB8888,
+                OutputColorMode::Rgb888 => OpfccrCm::RGB888,
+                OutputColorMode::Rgb565 => OpfccrCm::RGB565,
+                OutputColorMode::Argb1555 => OpfccrCm::ARGB1555,
+                OutputColorMode::Argb4444 => OpfccrCm::ARGB4444,
             });
             w.set_sb(match config.bytes_swap {
                 BytesSwap::Regular => Sb::REGULAR,
