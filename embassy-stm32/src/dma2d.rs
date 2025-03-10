@@ -22,6 +22,16 @@ use crate::{peripherals, rcc, Peripheral};
 
 static DMA2D_WAKER: AtomicWaker = AtomicWaker::new();
 
+/// CLUT color mode - format of the pixels in the clut buffer
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClutColorMode {
+    /// ARGB8888 - 32 bit
+    ARGB8888,
+    /// RGB888 - 24 bit
+    RGB888,
+}
+
 /// Output color
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -63,6 +73,16 @@ pub struct OcArgb1555(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct OcArgb8888(pub u32);
+
+/// Dead time in AHB clock ticks between two consecutive accesses on the AHB master port - limits bandwidth if enabled
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DeadTime {
+    /// Disabled
+    Disabled,
+    /// Enabled with specified number of AHB clock ticks for wait time
+    Enabled(u8),
+}
 
 /// Source image configuration
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,6 +153,8 @@ pub enum Error {
     InvalidDestBuffer(&'static str),
     /// Destination buffer is not 4 byte alligned which is required for DMA2D
     DstBufferNotAligned,
+    /// CLUT buffer format error
+    ClutSizeError(&'static str),
 }
 
 /// Output color mode
@@ -268,7 +290,19 @@ impl Default for LayerConfig {
     }
 }
 
+/// Layer
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Layer {
+    /// Foreground
+    Foreground,
+    /// Background
+    Background,
+}
+
 /// Layer color mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum LayerColorMode {
     /// Foreground color mode
     Foreground(FgColorMode),
@@ -276,9 +310,9 @@ pub enum LayerColorMode {
     Background(BgColorMode),
 }
 
+/// Alpha mode
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-/// Alpha mode
 pub enum AlphaMode {
     /// No modify
     NoModify,
@@ -738,6 +772,218 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         }
 
         Ok(())
+    }
+
+    /// Limits bandwidth by inserting a wait time (in AHB clock cycles) between two consecutive accesses on the AHB master port.
+    /// By default this is disabled
+    pub fn set_dead_time(&mut self, dead_time: DeadTime) {
+        let dma2d = T::regs();
+
+        dma2d.amtcr().modify(|w| match dead_time {
+            DeadTime::Disabled => {
+                w.set_dt(0);
+                w.set_en(false);
+            }
+            DeadTime::Enabled(num_ticks) => {
+                w.set_dt(num_ticks);
+                w.set_en(true);
+            }
+        });
+    }
+
+    /// Load color lookup table into clut registers
+    pub async fn load_clut<TPixel>(
+        &mut self,
+        clut: &[TPixel],
+        layer: Layer,
+        color_mode: ClutColorMode,
+    ) -> Result<(), Error> {
+        // setup clut transfer
+        self.load_clut_inner(clut, layer, color_mode)?;
+
+        // load clut async
+        self.clut_transfer(layer).await
+    }
+
+    /// Load color lookup table into clut registers
+    pub async fn load_clut_blocking<TPixel>(
+        &mut self,
+        clut: &[TPixel],
+        layer: Layer,
+        color_mode: ClutColorMode,
+    ) -> Result<(), Error> {
+        // setup clut transfer
+        self.load_clut_inner(clut, layer, color_mode)?;
+
+        // start clut transfer
+        let dma2d = T::regs();
+        match layer {
+            Layer::Foreground => {
+                dma2d.fgpfccr().modify(|w| {
+                    w.set_cs(clut.len() as u8);
+                });
+            }
+            Layer::Background => {
+                dma2d.bgpfccr().modify(|w| {
+                    w.set_cs(clut.len() as u8);
+                });
+            }
+        }
+
+        // spin wait for completion
+        self.wait_for_transfer_blocking()
+    }
+
+    fn load_clut_inner<TPixel>(
+        &mut self,
+        clut: &[TPixel],
+        layer: Layer,
+        color_mode: ClutColorMode,
+    ) -> Result<(), Error> {
+        let dma2d = T::regs();
+
+        let size = size_of::<TPixel>();
+        if size != 3 || size != 4 {
+            return Err(Error::ClutSizeError(
+                "CLUT pixel size must be 32 or 24 bits (ARGB8888 or RGB888)",
+            ));
+        }
+
+        if clut.len() > 256 {
+            return Err(Error::ClutSizeError("CLUT buffer must be 0-256 in length"));
+        }
+
+        match layer {
+            Layer::Foreground => {
+                // set the start address of the clut buffer
+                dma2d.fgcmar().modify(|w| w.set_ma(clut.as_ptr() as u32));
+
+                // forground pixel format converter control register
+                dma2d.fgpfccr().modify(|w| {
+                    w.set_ccm(match color_mode {
+                        ClutColorMode::ARGB8888 => FgpfccrCcm::ARGB8888,
+                        ClutColorMode::RGB888 => FgpfccrCcm::RGB888,
+                    });
+                    w.set_cs(clut.len() as u8);
+                });
+            }
+            Layer::Background => {
+                // set the start address of the clut buffer
+                dma2d.bgcmar().modify(|w| w.set_ma(clut.as_ptr() as u32));
+
+                // background pixel format converter control register
+                dma2d.bgpfccr().modify(|w| {
+                    w.set_ccm(match color_mode {
+                        ClutColorMode::ARGB8888 => BgpfccrCcm::ARGB8888,
+                        ClutColorMode::RGB888 => BgpfccrCcm::RGB888,
+                    });
+                    w.set_cs(clut.len() as u8);
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn wait_for_transfer_blocking(&self) -> Result<(), Error> {
+        let dma2d = T::regs();
+
+        loop {
+            let status = dma2d.isr().read();
+            if status.caeif() {
+                return Err(Error::ClutAccessError);
+            } else if status.ceif() {
+                return Err(Error::ConfigurationError);
+            } else if status.ctcif() {
+                // CLUT transfer complete
+                return Ok(());
+            } else if status.tcif() {
+                // transfer complete
+                return Ok(());
+            } else if status.teif() {
+                return Err(Error::TransferError);
+            } else if status.twif() {
+                // transfer watermark complete
+                return Ok(());
+            } else {
+                continue;
+            }
+        }
+    }
+
+    /// Start a dma2d clut transfer
+    async fn clut_transfer(&self, layer: Layer) -> Result<(), Error> {
+        let mut status = T::regs().isr().read();
+
+        // if all interrupt flags are clear
+        if !status.caeif() && !status.ceif() && !status.ctcif() && !status.tcif() && !status.teif() && !status.twif() {
+            // wait for interrupt
+            poll_fn(|cx| {
+                let dma2d = T::regs();
+                // quick check to avoid registration if already done.
+                let status = dma2d.isr().read();
+                if status.caeif() || status.ceif() || status.ctcif() || status.tcif() || status.teif() || status.twif()
+                {
+                    return Poll::Ready(());
+                }
+
+                DMA2D_WAKER.register(cx.waker());
+
+                Self::clear_interrupt_flags(); // don't poison the request with old flags
+                Self::enable_interrupts(true);
+
+                // start the clut transfer
+                match layer {
+                    Layer::Foreground => {
+                        dma2d.bgpfccr().modify(|w| {
+                            w.set_start(BgpfccrStart::START);
+                        });
+                    }
+                    Layer::Background => {
+                        dma2d.fgpfccr().modify(|w| {
+                            w.set_start(FgpfccrStart::START);
+                        });
+                    }
+                }
+
+                // need to check condition after register to avoid a race
+                // condition that would result in lost notifications.
+                let status = dma2d.isr().read();
+                if status.caeif() || status.ceif() || status.ctcif() || status.tcif() || status.teif() || status.twif()
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+
+            // re-read the status register after wait.
+            status = T::regs().isr().read();
+        }
+
+        let result = if status.caeif() {
+            Err(Error::ClutAccessError)
+        } else if status.ceif() {
+            Err(Error::ConfigurationError)
+        } else if status.ctcif() {
+            // CLUT transfer complete
+            Ok(())
+        } else if status.tcif() {
+            // transfer complete
+            Ok(())
+        } else if status.teif() {
+            Err(Error::TransferError)
+        } else if status.twif() {
+            // transfer watermark complete
+            Ok(())
+        } else {
+            unreachable!("all interrupt status values checked")
+        };
+
+        Self::enable_interrupts(false);
+        Self::clear_interrupt_flags();
+        result
     }
 
     /// Initialise and enable the peripheral
