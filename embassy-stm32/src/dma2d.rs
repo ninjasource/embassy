@@ -4,9 +4,12 @@
 // This peripheral can be used in conjunction with the LTDC peripheral to achieve high frame rates when rendering frames to be sent to an LCD display
 // It can perform the following operations:
 // - Filling a part or the whole of a destination image with a specific color (see fill_rect)
-// - Copying a part or the whole of a source image into a part or the whole of a destination image (see transfer_image)
-// - Copying a part or the whole of a source image into a part or the whole of a destination image with a pixel format conversion
-// - Blending a part and/or two complete source images with different pixel format and copy the result into a part or the whole of a destination image with a different color format
+// - Copying a part or the whole of a source image into a part or the whole of a destination image with or without pixel format conversion (see transfer_image)
+// - Blending a part and/or two complete source images with different pixel format and copy the result into a part or the whole of a destination image with a different color format (see transfer_blended_image)
+//
+// Both async and blocking modes of operation are supported
+// The source and destination image buffers need to be 4 byte aligned and your mcu may have special requirements about what memory can be used.
+// You typically reserve specific memory regions using a linker script. Also, take care when enabling DCACHE as it may interfere with DMA.
 
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -21,115 +24,6 @@ use crate::interrupt::{self};
 use crate::{peripherals, rcc, Peripheral};
 
 static DMA2D_WAKER: AtomicWaker = AtomicWaker::new();
-
-/// CLUT color mode - format of the pixels in the clut buffer
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum ClutColorMode {
-    /// ARGB8888 - 32 bit
-    ARGB8888,
-    /// RGB888 - 24 bit
-    RGB888,
-}
-
-/// Output color
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum OutputColor {
-    /// ARGB8888 color
-    Argb8888(OcArgb8888),
-    /// RGB888 color
-    Rgb888(OcRgb888),
-    /// RGB565 color
-    Rgb565(OcRgb565),
-    /// ARGB1555 color
-    Argb1555(OcArgb1555),
-    /// ARGB444 color
-    Argb4444(OcArgb4444),
-}
-
-/// Output color RGB565
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct OcRgb565(pub u16);
-
-/// Output color RGB888 - 24 bits but stored in 32 bits
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-/// RGB888 color - 24 bits but stored in 32 bits
-pub struct OcRgb888(pub u32);
-
-/// Output color ARGB444
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct OcArgb4444(pub u16);
-
-/// Output color ARGB1555
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct OcArgb1555(pub u16);
-
-/// Output color ARGB8888
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct OcArgb8888(pub u32);
-
-/// Dead time in AHB clock ticks between two consecutive accesses on the AHB master port - limits bandwidth if enabled
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum DeadTime {
-    /// Disabled
-    Disabled,
-    /// Enabled with specified number of AHB clock ticks for wait time
-    Enabled(u8),
-}
-
-/// Source image configuration
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SrcImgConfig {
-    /// Alpha value (0-255 transparrent-opaque)
-    pub alpha: u8,
-    /// Alpha mode
-    pub alpha_mode: AlphaMode,
-    /// Alpha inversion
-    pub alpha_inversion: AlphaInversion,
-    /// Red blue swap
-    pub red_blue_swap: RedBlueSwap,
-}
-
-impl Default for SrcImgConfig {
-    fn default() -> Self {
-        Self {
-            alpha: 0xFF,                     // fully opaque
-            alpha_mode: AlphaMode::NoModify, // alpha not applied
-            alpha_inversion: AlphaInversion::Regular,
-            red_blue_swap: RedBlueSwap::Regular,
-        }
-    }
-}
-
-/// Destination image configuration
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DstImgConfig {
-    /// Regular or inverted alpha value for the output pixel format converter
-    pub alpha_inverted: AlphaInversion,
-    /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
-    pub red_blue_swap: RedBlueSwap,
-    /// Byte regular mode or bytes swap mode (two by two)
-    pub bytes_swap: BytesSwap,
-}
-
-impl Default for DstImgConfig {
-    fn default() -> Self {
-        Self {
-            alpha_inverted: AlphaInversion::Regular,
-            red_blue_swap: RedBlueSwap::Regular,
-            bytes_swap: BytesSwap::Regular,
-        }
-    }
-}
 
 /// DMA2D error
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -157,171 +51,6 @@ pub enum Error {
     ClutSizeError(&'static str),
 }
 
-/// Output color mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum OutputColorMode {
-    /// ARGB8888
-    Argb8888,
-    /// RBG888
-    Rgb888,
-    /// RGB565,
-    Rgb565,
-    /// ARGB1555,
-    Argb1555,
-    /// ARGB4444
-    Argb4444,
-}
-
-/// Foreground layer color mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum FgColorMode {
-    /// ARGB8888
-    Argb8888,
-    /// RGB888
-    Rgb888,
-    /// RGB565
-    Rgb565,
-    /// ARGB1555
-    Argb1555,
-    /// ARGB4444
-    Argb4444,
-    /// L8
-    L8,
-    /// AL44
-    Al44,
-    /// AL88
-    Al88,
-    /// L4
-    L4,
-    /// A8
-    A8,
-    /// A4
-    A4,
-    /// YCbCr
-    YcbCr,
-}
-
-/// Background layer color mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum BgColorMode {
-    /// ARGB8888
-    Argb8888,
-    /// RGB888
-    Rgb888,
-    /// RGB565
-    Rgb565,
-    /// ARGB1555
-    Argb1555,
-    /// ARGB4444
-    Argb4444,
-    /// L8
-    L8,
-    /// AL44
-    Al44,
-    /// AL88
-    Al88,
-    /// L4
-    L4,
-    /// A8
-    A8,
-    /// A4
-    A4,
-}
-
-/// Alpha inversion
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum AlphaInversion {
-    /// Regular
-    Regular,
-    /// Inverted
-    Inverted,
-}
-
-/// Red blue swap
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum RedBlueSwap {
-    /// Regular
-    Regular,
-    /// Swap
-    Swap,
-}
-
-/// Bytes swap
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum BytesSwap {
-    /// Regular
-    Regular,
-    /// Swap
-    Swap,
-}
-
-/// Layer config
-pub struct LayerConfig {
-    /// Alpha value
-    pub alpha: u8,
-    /// Alpha mode
-    pub alpha_mode: AlphaMode,
-    /// Alpha inversion
-    pub alpha_inversion: AlphaInversion,
-    /// Red blue swap
-    pub red_blue_swap: RedBlueSwap,
-    /// Color mode
-    pub color_mode: LayerColorMode,
-    /// Line offset
-    pub line_offset: u16,
-}
-
-impl Default for LayerConfig {
-    fn default() -> Self {
-        Self {
-            alpha: 0,
-            alpha_mode: AlphaMode::NoModify,
-            alpha_inversion: AlphaInversion::Regular,
-            red_blue_swap: RedBlueSwap::Regular,
-            color_mode: LayerColorMode::Foreground(FgColorMode::Rgb565),
-            line_offset: 0,
-        }
-    }
-}
-
-/// Layer
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Layer {
-    /// Foreground
-    Foreground,
-    /// Background
-    Background,
-}
-
-/// Layer color mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum LayerColorMode {
-    /// Foreground color mode
-    Foreground(FgColorMode),
-    /// Background color mode
-    Background(BgColorMode),
-}
-
-/// Alpha mode
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum AlphaMode {
-    /// No modify
-    NoModify,
-    /// Replace
-    Replace,
-    /// Multiply
-    Multiply,
-}
-
 /// Dma2d driver.
 pub struct Dma2d<'d, T: Instance> {
     _peri: PeripheralRef<'d, T>,
@@ -333,6 +62,13 @@ pub struct InterruptHandler<T: Instance> {
     _phantom: PhantomData<T>,
 }
 
+/// DMA2D instance trait.
+#[allow(private_bounds)]
+pub trait Instance: SealedInstance + Peripheral<P = Self> + crate::rcc::RccPeripheral + 'static + Send {
+    /// Interrupt for this instance.
+    type Interrupt: interrupt::typelevel::Interrupt;
+}
+
 impl<'d, T: Instance> Drop for Dma2d<'d, T> {
     fn drop(&mut self) {}
 }
@@ -341,190 +77,12 @@ trait SealedInstance: crate::rcc::SealedRccPeripheral {
     fn regs() -> crate::pac::dma2d::Dma2d;
 }
 
-/// DMA2D instance trait.
-#[allow(private_bounds)]
-pub trait Instance: SealedInstance + Peripheral<P = Self> + crate::rcc::RccPeripheral + 'static + Send {
-    /// Interrupt for this instance.
-    type Interrupt: interrupt::typelevel::Interrupt;
-}
-
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         cortex_m::asm::dsb();
         Dma2d::<T>::enable_interrupts(false);
         DMA2D_WAKER.wake();
     }
-}
-
-/// Filled rectangle
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct FilledRect {
-    /// top left x (negative is out of bounds and allowed)
-    pub x: i32,
-    /// top left y (negative is out of bounds and allowed)
-    pub y: i32,
-    /// width in pixels
-    pub width: u16,
-    /// height in pixels
-    pub height: u16,
-    /// fill color
-    pub color: OutputColor,
-}
-
-impl FilledRect {
-    /// Creates anew instance
-    pub fn new(x: i32, y: i32, width: u16, height: u16, color: OutputColor) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-            color,
-        }
-    }
-}
-
-/// Source foreground image
-pub struct SrcFgImage<'a, TSrcPixel> {
-    /// memory address of start of the image buffer
-    pub addr: &'a [TSrcPixel],
-    /// top left x (negative is out of bounds and allowed)
-    pub x: i32,
-    /// top left y (negative is out of bounds and allowed)
-    pub y: i32,
-    /// width in pixels
-    pub width: u16,
-    /// height in pixels
-    pub height: u16,
-    /// color format of the pixels in the buffer
-    pub color_mode: FgColorMode,
-    /// config
-    pub config: SrcImgConfig,
-}
-
-impl<'a, TSrcPixel> SrcFgImage<'a, TSrcPixel> {
-    /// Creates a new instance of the source
-    pub fn new(
-        addr: &'a [TSrcPixel],
-        x: i32,
-        y: i32,
-        width: u16,
-        height: u16,
-        color_mode: FgColorMode,
-        config: SrcImgConfig,
-    ) -> Self {
-        Self {
-            addr,
-            x,
-            y,
-            width,
-            height,
-            color_mode,
-            config,
-        }
-    }
-}
-
-/// Source background image
-pub struct SrcBgImage<'a, TSrcPixel> {
-    /// memory address of start of the image buffer
-    pub addr: &'a [TSrcPixel],
-    /// top left x (negative is out of bounds and allowed)
-    pub x: i32,
-    /// top left y (negative is out of bounds and allowed)
-    pub y: i32,
-    /// width in pixels
-    pub width: u16,
-    /// height in pixels
-    pub height: u16,
-    /// color format of the pixels in the buffer
-    pub color_mode: BgColorMode,
-    /// config
-    pub config: SrcImgConfig,
-}
-
-impl<'a, TSrcPixel> SrcBgImage<'a, TSrcPixel> {
-    /// Creates a new instance of the source
-    pub fn new(
-        addr: &'a [TSrcPixel],
-        x: i32,
-        y: i32,
-        width: u16,
-        height: u16,
-        color_mode: BgColorMode,
-        config: SrcImgConfig,
-    ) -> Self {
-        Self {
-            addr,
-            x,
-            y,
-            width,
-            height,
-            color_mode,
-            config,
-        }
-    }
-}
-
-/// Destination buffer
-pub struct DstBuffer<'a, TPixel> {
-    /// memory address of start of buffer
-    pub addr: &'a mut [TPixel],
-    /// width in pixels
-    pub width: u16,
-    /// height in pixels
-    pub height: u16,
-    /// color mode
-    pub color_mode: OutputColorMode,
-    /// extra config
-    pub config: DstImgConfig,
-}
-
-impl<'a, TPixel> DstBuffer<'a, TPixel> {
-    /// Creates a new instance of DestBuffer
-    pub fn new(
-        addr: &'a mut [TPixel],
-        width: u16,
-        height: u16,
-        color_mode: OutputColorMode,
-        config: DstImgConfig,
-    ) -> Self {
-        Self {
-            addr,
-            width,
-            height,
-            color_mode,
-            config,
-        }
-    }
-}
-
-/// Layer color
-pub struct LayerColor {
-    /// Red
-    pub red: u8,
-    /// Green
-    pub green: u8,
-    /// Blue
-    pub blue: u8,
-}
-
-impl LayerColor {
-    /// Creates a new instance of a layer color
-    pub fn new(red: u8, green: u8, blue: u8) -> Self {
-        Self { red, green, blue }
-    }
-}
-
-/// Blend source
-pub enum BlendSrc<'a, TSrcFgPixel, TSrcBgPixel> {
-    /// Blend foreground fixed color with background image
-    BlendFgFixedColorBgImg(LayerColor, SrcBgImage<'a, TSrcBgPixel>),
-    /// Blend foreground image with background fixed color
-    BlendFgImgBgFixedColor(SrcFgImage<'a, TSrcFgPixel>, LayerColor),
-    /// Blend foreground image with background image
-    BlendFgImgBgImg(SrcFgImage<'a, TSrcFgPixel>, SrcBgImage<'a, TSrcBgPixel>),
 }
 
 impl<'d, T: Instance> Dma2d<'d, T> {
@@ -547,6 +105,152 @@ impl<'d, T: Instance> Dma2d<'d, T> {
         src: FilledRect,
         dst: DstBuffer<'a, TDstPixel>,
     ) -> Result<(), Error> {
+        if self.transfer_rect_inner(src, dst)? {
+            self.transfer().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Fill rectangle with given color blocking and spin wait for completion
+    pub fn transfer_rect_blocking<'a, TDstPixel>(
+        &mut self,
+        src: FilledRect,
+        dst: DstBuffer<'a, TDstPixel>,
+    ) -> Result<(), Error> {
+        if self.transfer_rect_inner(src, dst)? {
+            // start the transfer
+            T::regs().cr().modify(|w| w.set_start(CrStart::START));
+            self.wait_for_transfer_blocking()?;
+        }
+
+        Ok(())
+    }
+
+    /// Transfer image
+    pub async fn transfer_image<'a, TSrcPixel, TDstPixel>(
+        &mut self,
+        src: SrcFgImage<'a, TSrcPixel>,
+        dst: DstBuffer<'a, TDstPixel>,
+        enable_pixel_format_conversion: bool,
+    ) -> Result<(), Error> {
+        if self.transfer_image_inner(src, dst, enable_pixel_format_conversion)? {
+            self.transfer().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Transfer image blocking and spin wait until completion
+    pub fn transfer_image_blocking<'a, TSrcPixel, TDstPixel>(
+        &mut self,
+        src: SrcFgImage<'a, TSrcPixel>,
+        dst: DstBuffer<'a, TDstPixel>,
+        enable_pixel_format_conversion: bool,
+    ) -> Result<(), Error> {
+        if self.transfer_image_inner(src, dst, enable_pixel_format_conversion)? {
+            // start the transfer
+            T::regs().cr().modify(|w| w.set_start(CrStart::START));
+            self.wait_for_transfer_blocking()?;
+        }
+
+        Ok(())
+    }
+
+    /// Transfer blended image
+    pub async fn transfer_blended_image<'a, TSrcFgPixel, TSrcBgPixel, TDstPixel>(
+        &mut self,
+        src: BlendSrc<'a, TSrcFgPixel, TSrcBgPixel>,
+        dst: DstBuffer<'a, TDstPixel>,
+    ) -> Result<(), Error> {
+        if self.transfer_blended_image_inner(src, dst)? {
+            self.transfer().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Transfer blended image and spin wait until completion
+    pub fn transfer_blended_image_blocking<'a, TSrcFgPixel, TSrcBgPixel, TDstPixel>(
+        &mut self,
+        src: BlendSrc<'a, TSrcFgPixel, TSrcBgPixel>,
+        dst: DstBuffer<'a, TDstPixel>,
+    ) -> Result<(), Error> {
+        if self.transfer_blended_image_inner(src, dst)? {
+            // start the transfer
+            T::regs().cr().modify(|w| w.set_start(CrStart::START));
+            self.wait_for_transfer_blocking()?;
+        }
+
+        Ok(())
+    }
+
+    /// Load color lookup table into clut registers
+    pub async fn load_clut<TPixel>(
+        &mut self,
+        clut: &[TPixel],
+        layer: Layer,
+        color_mode: ClutColorMode,
+    ) -> Result<(), Error> {
+        // setup clut transfer
+        self.load_clut_inner(clut, layer, color_mode)?;
+
+        // load clut async
+        self.clut_transfer(layer).await
+    }
+
+    /// Load color lookup table into clut registers
+    pub fn load_clut_blocking<TPixel>(
+        &mut self,
+        clut: &[TPixel],
+        layer: Layer,
+        color_mode: ClutColorMode,
+    ) -> Result<(), Error> {
+        // setup clut transfer
+        self.load_clut_inner(clut, layer, color_mode)?;
+
+        // start clut transfer
+        let dma2d = T::regs();
+        match layer {
+            Layer::Foreground => {
+                dma2d.fgpfccr().modify(|w| {
+                    w.set_cs(clut.len() as u8);
+                });
+            }
+            Layer::Background => {
+                dma2d.bgpfccr().modify(|w| {
+                    w.set_cs(clut.len() as u8);
+                });
+            }
+        }
+
+        // spin wait for completion
+        self.wait_for_transfer_blocking()
+    }
+
+    /// Limits bandwidth by inserting a wait time (in AHB clock cycles) between two consecutive accesses on the AHB master port.
+    /// By default this is disabled
+    pub fn set_dead_time(&mut self, dead_time: DeadTime) {
+        let dma2d = T::regs();
+
+        dma2d.amtcr().modify(|w| match dead_time {
+            DeadTime::Disabled => {
+                w.set_dt(0);
+                w.set_en(false);
+            }
+            DeadTime::Enabled(num_ticks) => {
+                w.set_dt(num_ticks);
+                w.set_en(true);
+            }
+        });
+    }
+
+    /// Fill rectangle with given color
+    fn transfer_rect_inner<'a, TDstPixel>(
+        &mut self,
+        src: FilledRect,
+        dst: DstBuffer<'a, TDstPixel>,
+    ) -> Result<bool, Error> {
         if dst.addr.len() != (dst.width as usize * dst.height as usize) {
             return Err(Error::InvalidDestBuffer(
                 "destination buffer length does not match given width and height",
@@ -600,19 +304,19 @@ impl<'d, T: Instance> Dma2d<'d, T> {
             });
 
             self.setup_output(dst_addr, offsets.width, offsets.height);
-            self.transfer().await?;
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
     /// Transfer image
-    pub async fn transfer_image<'a, TSrcPixel, TDstPixel>(
+    fn transfer_image_inner<'a, TSrcPixel, TDstPixel>(
         &mut self,
         src: SrcFgImage<'a, TSrcPixel>,
         dst: DstBuffer<'a, TDstPixel>,
         enable_pixel_format_conversion: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         if src.addr.len() != (src.width as usize * src.height as usize) {
             return Err(Error::InvalidSourceData(
                 "source buffer length does not match given width and height",
@@ -654,18 +358,18 @@ impl<'d, T: Instance> Dma2d<'d, T> {
             let dma2d = T::regs();
             dma2d.fgmar().modify(|w| w.set_ma(src_addr.as_ptr() as u32));
             self.setup_output(dst_addr.as_ptr() as u32, offsets.width, offsets.height);
-            self.transfer().await?;
+            return Ok(true);
         }
 
-        Ok(())
+        Ok(false)
     }
 
     /// Transfer blended image
-    pub async fn transfer_blended_image<'a, TSrcFgPixel, TSrcBgPixel, TDstPixel>(
+    fn transfer_blended_image_inner<'a, TSrcFgPixel, TSrcBgPixel, TDstPixel>(
         &mut self,
         src: BlendSrc<'a, TSrcFgPixel, TSrcBgPixel>,
         dst: DstBuffer<'a, TDstPixel>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let dma2d = T::regs();
 
         if let Some((transfer_mode, output_offset)) = match src {
@@ -768,70 +472,10 @@ impl<'d, T: Instance> Dma2d<'d, T> {
                 red_blue_swap: dst.config.red_blue_swap,
             };
             self.init(config);
-            self.transfer().await?;
+            return Ok(true);
         }
 
-        Ok(())
-    }
-
-    /// Limits bandwidth by inserting a wait time (in AHB clock cycles) between two consecutive accesses on the AHB master port.
-    /// By default this is disabled
-    pub fn set_dead_time(&mut self, dead_time: DeadTime) {
-        let dma2d = T::regs();
-
-        dma2d.amtcr().modify(|w| match dead_time {
-            DeadTime::Disabled => {
-                w.set_dt(0);
-                w.set_en(false);
-            }
-            DeadTime::Enabled(num_ticks) => {
-                w.set_dt(num_ticks);
-                w.set_en(true);
-            }
-        });
-    }
-
-    /// Load color lookup table into clut registers
-    pub async fn load_clut<TPixel>(
-        &mut self,
-        clut: &[TPixel],
-        layer: Layer,
-        color_mode: ClutColorMode,
-    ) -> Result<(), Error> {
-        // setup clut transfer
-        self.load_clut_inner(clut, layer, color_mode)?;
-
-        // load clut async
-        self.clut_transfer(layer).await
-    }
-
-    /// Load color lookup table into clut registers
-    pub async fn load_clut_blocking<TPixel>(
-        &mut self,
-        clut: &[TPixel],
-        layer: Layer,
-        color_mode: ClutColorMode,
-    ) -> Result<(), Error> {
-        // setup clut transfer
-        self.load_clut_inner(clut, layer, color_mode)?;
-
-        // start clut transfer
-        let dma2d = T::regs();
-        match layer {
-            Layer::Foreground => {
-                dma2d.fgpfccr().modify(|w| {
-                    w.set_cs(clut.len() as u8);
-                });
-            }
-            Layer::Background => {
-                dma2d.bgpfccr().modify(|w| {
-                    w.set_cs(clut.len() as u8);
-                });
-            }
-        }
-
-        // spin wait for completion
-        self.wait_for_transfer_blocking()
+        Ok(false)
     }
 
     fn load_clut_inner<TPixel>(
@@ -1242,6 +886,451 @@ foreach_interrupt!(
         }
     };
 );
+
+/// CLUT color mode - format of the pixels in the clut buffer
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClutColorMode {
+    /// ARGB8888 - 32 bit
+    ARGB8888,
+    /// RGB888 - 24 bit
+    RGB888,
+}
+
+/// Output color
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum OutputColor {
+    /// ARGB8888 color
+    Argb8888(OcArgb8888),
+    /// RGB888 color
+    Rgb888(OcRgb888),
+    /// RGB565 color
+    Rgb565(OcRgb565),
+    /// ARGB1555 color
+    Argb1555(OcArgb1555),
+    /// ARGB444 color
+    Argb4444(OcArgb4444),
+}
+
+/// Output color RGB565
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct OcRgb565(pub u16);
+
+/// Output color RGB888 - 24 bits but stored in 32 bits
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// RGB888 color - 24 bits but stored in 32 bits
+pub struct OcRgb888(pub u32);
+
+/// Output color ARGB444
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct OcArgb4444(pub u16);
+
+/// Output color ARGB1555
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct OcArgb1555(pub u16);
+
+/// Output color ARGB8888
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct OcArgb8888(pub u32);
+
+/// Dead time in AHB clock ticks between two consecutive accesses on the AHB master port - limits bandwidth if enabled
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DeadTime {
+    /// Disabled
+    Disabled,
+    /// Enabled with specified number of AHB clock ticks for wait time
+    Enabled(u8),
+}
+
+/// Source image configuration
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SrcImgConfig {
+    /// Alpha value (0-255 transparrent-opaque)
+    pub alpha: u8,
+    /// Alpha mode
+    pub alpha_mode: AlphaMode,
+    /// Alpha inversion
+    pub alpha_inversion: AlphaInversion,
+    /// Red blue swap
+    pub red_blue_swap: RedBlueSwap,
+}
+
+impl Default for SrcImgConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0xFF,                     // fully opaque
+            alpha_mode: AlphaMode::NoModify, // alpha not applied
+            alpha_inversion: AlphaInversion::Regular,
+            red_blue_swap: RedBlueSwap::Regular,
+        }
+    }
+}
+
+/// Destination image configuration
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DstImgConfig {
+    /// Regular or inverted alpha value for the output pixel format converter
+    pub alpha_inverted: AlphaInversion,
+    /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
+    pub red_blue_swap: RedBlueSwap,
+    /// Byte regular mode or bytes swap mode (two by two)
+    pub bytes_swap: BytesSwap,
+}
+
+impl Default for DstImgConfig {
+    fn default() -> Self {
+        Self {
+            alpha_inverted: AlphaInversion::Regular,
+            red_blue_swap: RedBlueSwap::Regular,
+            bytes_swap: BytesSwap::Regular,
+        }
+    }
+}
+
+/// Output color mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum OutputColorMode {
+    /// ARGB8888
+    Argb8888,
+    /// RBG888
+    Rgb888,
+    /// RGB565,
+    Rgb565,
+    /// ARGB1555,
+    Argb1555,
+    /// ARGB4444
+    Argb4444,
+}
+
+/// Foreground layer color mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum FgColorMode {
+    /// ARGB8888
+    Argb8888,
+    /// RGB888
+    Rgb888,
+    /// RGB565
+    Rgb565,
+    /// ARGB1555
+    Argb1555,
+    /// ARGB4444
+    Argb4444,
+    /// L8
+    L8,
+    /// AL44
+    Al44,
+    /// AL88
+    Al88,
+    /// L4
+    L4,
+    /// A8
+    A8,
+    /// A4
+    A4,
+    /// YCbCr
+    YcbCr,
+}
+
+/// Background layer color mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BgColorMode {
+    /// ARGB8888
+    Argb8888,
+    /// RGB888
+    Rgb888,
+    /// RGB565
+    Rgb565,
+    /// ARGB1555
+    Argb1555,
+    /// ARGB4444
+    Argb4444,
+    /// L8
+    L8,
+    /// AL44
+    Al44,
+    /// AL88
+    Al88,
+    /// L4
+    L4,
+    /// A8
+    A8,
+    /// A4
+    A4,
+}
+
+/// Alpha inversion
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum AlphaInversion {
+    /// Regular
+    Regular,
+    /// Inverted
+    Inverted,
+}
+
+/// Red blue swap
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum RedBlueSwap {
+    /// Regular
+    Regular,
+    /// Swap
+    Swap,
+}
+
+/// Bytes swap
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum BytesSwap {
+    /// Regular
+    Regular,
+    /// Swap
+    Swap,
+}
+
+/// Layer config
+pub struct LayerConfig {
+    /// Alpha value
+    pub alpha: u8,
+    /// Alpha mode
+    pub alpha_mode: AlphaMode,
+    /// Alpha inversion
+    pub alpha_inversion: AlphaInversion,
+    /// Red blue swap
+    pub red_blue_swap: RedBlueSwap,
+    /// Color mode
+    pub color_mode: LayerColorMode,
+    /// Line offset
+    pub line_offset: u16,
+}
+
+impl Default for LayerConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0,
+            alpha_mode: AlphaMode::NoModify,
+            alpha_inversion: AlphaInversion::Regular,
+            red_blue_swap: RedBlueSwap::Regular,
+            color_mode: LayerColorMode::Foreground(FgColorMode::Rgb565),
+            line_offset: 0,
+        }
+    }
+}
+
+/// Layer
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Layer {
+    /// Foreground
+    Foreground,
+    /// Background
+    Background,
+}
+
+/// Layer color mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum LayerColorMode {
+    /// Foreground color mode
+    Foreground(FgColorMode),
+    /// Background color mode
+    Background(BgColorMode),
+}
+
+/// Alpha mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum AlphaMode {
+    /// No modify
+    NoModify,
+    /// Replace
+    Replace,
+    /// Multiply
+    Multiply,
+}
+
+/// Filled rectangle
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct FilledRect {
+    /// top left x (negative is out of bounds and allowed)
+    pub x: i32,
+    /// top left y (negative is out of bounds and allowed)
+    pub y: i32,
+    /// width in pixels
+    pub width: u16,
+    /// height in pixels
+    pub height: u16,
+    /// fill color
+    pub color: OutputColor,
+}
+
+impl FilledRect {
+    /// Creates anew instance
+    pub fn new(x: i32, y: i32, width: u16, height: u16, color: OutputColor) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            color,
+        }
+    }
+}
+
+/// Source foreground image
+pub struct SrcFgImage<'a, TSrcPixel> {
+    /// memory address of start of the image buffer
+    pub addr: &'a [TSrcPixel],
+    /// top left x (negative is out of bounds and allowed)
+    pub x: i32,
+    /// top left y (negative is out of bounds and allowed)
+    pub y: i32,
+    /// width in pixels
+    pub width: u16,
+    /// height in pixels
+    pub height: u16,
+    /// color format of the pixels in the buffer
+    pub color_mode: FgColorMode,
+    /// config
+    pub config: SrcImgConfig,
+}
+
+impl<'a, TSrcPixel> SrcFgImage<'a, TSrcPixel> {
+    /// Creates a new instance of the source
+    pub fn new(
+        addr: &'a [TSrcPixel],
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        color_mode: FgColorMode,
+        config: SrcImgConfig,
+    ) -> Self {
+        Self {
+            addr,
+            x,
+            y,
+            width,
+            height,
+            color_mode,
+            config,
+        }
+    }
+}
+
+/// Source background image
+pub struct SrcBgImage<'a, TSrcPixel> {
+    /// memory address of start of the image buffer
+    pub addr: &'a [TSrcPixel],
+    /// top left x (negative is out of bounds and allowed)
+    pub x: i32,
+    /// top left y (negative is out of bounds and allowed)
+    pub y: i32,
+    /// width in pixels
+    pub width: u16,
+    /// height in pixels
+    pub height: u16,
+    /// color format of the pixels in the buffer
+    pub color_mode: BgColorMode,
+    /// config
+    pub config: SrcImgConfig,
+}
+
+impl<'a, TSrcPixel> SrcBgImage<'a, TSrcPixel> {
+    /// Creates a new instance of the source
+    pub fn new(
+        addr: &'a [TSrcPixel],
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        color_mode: BgColorMode,
+        config: SrcImgConfig,
+    ) -> Self {
+        Self {
+            addr,
+            x,
+            y,
+            width,
+            height,
+            color_mode,
+            config,
+        }
+    }
+}
+
+/// Destination buffer
+pub struct DstBuffer<'a, TPixel> {
+    /// memory address of start of buffer
+    pub addr: &'a mut [TPixel],
+    /// width in pixels
+    pub width: u16,
+    /// height in pixels
+    pub height: u16,
+    /// color mode
+    pub color_mode: OutputColorMode,
+    /// extra config
+    pub config: DstImgConfig,
+}
+
+impl<'a, TPixel> DstBuffer<'a, TPixel> {
+    /// Creates a new instance of DestBuffer
+    pub fn new(
+        addr: &'a mut [TPixel],
+        width: u16,
+        height: u16,
+        color_mode: OutputColorMode,
+        config: DstImgConfig,
+    ) -> Self {
+        Self {
+            addr,
+            width,
+            height,
+            color_mode,
+            config,
+        }
+    }
+}
+
+/// Layer color
+pub struct LayerColor {
+    /// Red
+    pub red: u8,
+    /// Green
+    pub green: u8,
+    /// Blue
+    pub blue: u8,
+}
+
+impl LayerColor {
+    /// Creates a new instance of a layer color
+    pub fn new(red: u8, green: u8, blue: u8) -> Self {
+        Self { red, green, blue }
+    }
+}
+
+/// Blend source
+pub enum BlendSrc<'a, TSrcFgPixel, TSrcBgPixel> {
+    /// Blend foreground fixed color with background image
+    BlendFgFixedColorBgImg(LayerColor, SrcBgImage<'a, TSrcBgPixel>),
+    /// Blend foreground image with background fixed color
+    BlendFgImgBgFixedColor(SrcFgImage<'a, TSrcFgPixel>, LayerColor),
+    /// Blend foreground image with background image
+    BlendFgImgBgImg(SrcFgImage<'a, TSrcFgPixel>, SrcBgImage<'a, TSrcBgPixel>),
+}
 
 #[derive(Debug)]
 struct ImgOffsets {
