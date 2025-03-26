@@ -103,9 +103,10 @@ impl<'d, T: Instance> Dma2d<'d, T> {
     pub async fn transfer_rect<'a, TDstPixel>(
         &mut self,
         src: FilledRect,
-        dst: DstBuffer<'a, TDstPixel>,
+        dst: &'a mut [TDstPixel],
+        config: DstImgConfig,
     ) -> Result<(), Error> {
-        if self.transfer_rect_inner(src, dst)? {
+        if self.transfer_rect_inner(src, dst, config)? {
             self.transfer().await?;
         }
 
@@ -116,9 +117,10 @@ impl<'d, T: Instance> Dma2d<'d, T> {
     pub fn transfer_rect_blocking<'a, TDstPixel>(
         &mut self,
         src: FilledRect,
-        dst: DstBuffer<'a, TDstPixel>,
+        dst: &'a mut [TDstPixel],
+        config: DstImgConfig,
     ) -> Result<(), Error> {
-        if self.transfer_rect_inner(src, dst)? {
+        if self.transfer_rect_inner(src, dst, config)? {
             // start the transfer
             T::regs().cr().modify(|w| w.set_start(CrStart::START));
             self.wait_for_transfer_blocking()?;
@@ -249,15 +251,16 @@ impl<'d, T: Instance> Dma2d<'d, T> {
     fn transfer_rect_inner<'a, TDstPixel>(
         &mut self,
         src: FilledRect,
-        dst: DstBuffer<'a, TDstPixel>,
+        dst: &'a mut [TDstPixel],
+        config: DstImgConfig,
     ) -> Result<bool, Error> {
-        if dst.addr.len() != (dst.width as usize * dst.height as usize) {
+        if dst.len() != (config.width as usize * config.height as usize) {
             return Err(Error::InvalidDestBuffer(
                 "destination buffer length does not match given width and height",
             ));
         }
 
-        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, dst.width, dst.height) {
+        if let Some(offsets) = calculate_offsets(src.x, src.y, src.width, src.height, config.width, config.height) {
             let (color_mode, size) = match &src.color {
                 OutputColor::Argb1555(_) => (OutputColorMode::Argb1555, size_of::<OcArgb1555>()),
                 OutputColor::Argb4444(_) => (OutputColorMode::Argb4444, size_of::<OcArgb4444>()),
@@ -266,7 +269,7 @@ impl<'d, T: Instance> Dma2d<'d, T> {
                 OutputColor::Rgb888(_) => (OutputColorMode::Rgb888, size_of::<OcRgb888>()),
             };
 
-            if color_mode != dst.color_mode {
+            if color_mode != config.color_mode {
                 return Err(Error::OutputColorTypeMismatch(
                     "rect color does not match dst color mode",
                 ));
@@ -282,14 +285,14 @@ impl<'d, T: Instance> Dma2d<'d, T> {
                 transfer_mode: TransferMode::RegisterToMemory,
                 line_offset_mode: LineOffsetMode::Pixels,
                 output_offset: offsets.dst.line_offset,
-                color_mode: dst.color_mode,
-                alpha_inverted: dst.config.alpha_inverted,
-                bytes_swap: dst.config.bytes_swap,
-                red_blue_swap: dst.config.red_blue_swap,
+                color_mode: config.color_mode,
+                alpha_inverted: config.alpha_inverted,
+                bytes_swap: config.bytes_swap,
+                red_blue_swap: config.red_blue_swap,
             };
             self.init(config);
 
-            let dst_addr = (&dst.addr[offsets.dst.start_offset..]).as_ptr() as u32;
+            let dst_addr = (&dst[offsets.dst.start_offset..]).as_ptr() as u32;
 
             let dma2d = T::regs();
             dma2d.ocolr().modify(|w| {
@@ -978,6 +981,12 @@ impl Default for SrcImgConfig {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DstImgConfig {
+    /// width in pixels
+    pub width: u16,
+    /// height in pixels
+    pub height: u16,
+    /// color mode
+    pub color_mode: OutputColorMode,
     /// Regular or inverted alpha value for the output pixel format converter
     pub alpha_inverted: AlphaInversion,
     /// Regular more (RGB or ARGB) or swap mode (BGR or ABGR) for the output pixel format converter
@@ -989,6 +998,9 @@ pub struct DstImgConfig {
 impl Default for DstImgConfig {
     fn default() -> Self {
         Self {
+            width: 0,
+            height: 0,
+            color_mode: OutputColorMode::Rgb565,
             alpha_inverted: AlphaInversion::Regular,
             red_blue_swap: RedBlueSwap::Regular,
             bytes_swap: BytesSwap::Regular,
