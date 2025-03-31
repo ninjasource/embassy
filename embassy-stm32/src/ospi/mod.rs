@@ -369,7 +369,6 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             w.set_refresh(config.refresh);
         });
 
-        /*
         T::REGS.cr().modify(|w| {
             w.set_fthres(vals::Threshold::from_bits(config.fifo_threshold.into()));
         });
@@ -641,7 +640,6 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             w.set_refresh(config.refresh);
         });
 
-        /*
         T::REGS.cr().modify(|w| {
             w.set_fthres(vals::Threshold::from_bits(config.fifo_threshold.into()));
         });

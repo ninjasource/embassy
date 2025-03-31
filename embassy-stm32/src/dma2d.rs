@@ -15,13 +15,14 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_hal_internal::{into_ref, PeripheralRef};
+use embassy_hal_internal::PeripheralType;
+//use embassy_hal_internal::{into_ref, PeriRef};
 use embassy_sync::waitqueue::AtomicWaker;
 use stm32_metapac::dma2d::vals::*;
 
 use crate::interrupt::typelevel::Interrupt;
 use crate::interrupt::{self};
-use crate::{peripherals, rcc, Peripheral};
+use crate::{peripherals, rcc, Peri};
 
 static DMA2D_WAKER: AtomicWaker = AtomicWaker::new();
 
@@ -53,7 +54,7 @@ pub enum Error {
 
 /// Dma2d driver.
 pub struct Dma2d<'d, T: Instance> {
-    _peri: PeripheralRef<'d, T>,
+    _peri: Peri<'d, T>,
     config: Option<Dma2dConfiguration>,
 }
 
@@ -64,7 +65,7 @@ pub struct InterruptHandler<T: Instance> {
 
 /// DMA2D instance trait.
 #[allow(private_bounds)]
-pub trait Instance: SealedInstance + Peripheral<P = Self> + crate::rcc::RccPeripheral + 'static + Send {
+pub trait Instance: SealedInstance + PeripheralType + crate::rcc::RccPeripheral + 'static + Send {
     /// Interrupt for this instance.
     type Interrupt: interrupt::typelevel::Interrupt;
 }
@@ -88,11 +89,10 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 impl<'d, T: Instance> Dma2d<'d, T> {
     /// Create a new DMA2D driver
     pub fn new(
-        peri: impl Peripheral<P = T> + 'd,
+        peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         Self::setup_clocks();
-        into_ref!(peri);
         Self {
             _peri: peri,
             config: None,
